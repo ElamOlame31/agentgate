@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentGate — Real-Time Authorization Intelligence</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --surface: #111827;
+    --surface2: #1a2236;
+    --border: #1e2d45;
+    --accent: #3b82f6;
+    --accent2: #6366f1;
+    --green: #10b981;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --font: 'Inter', -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 7px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }
+
+  .grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding: 20px 28px 0; }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  .stat-value { font-size: 32px; font-weight: 700; margin-top: 6px; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.yellow { color: var(--yellow); }
+  .stat-value.accent { color: var(--accent); }
+
+  .main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px 28px; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel-header {
+    padding: 14px 18px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+    border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;
+  }
+
+  /* Feed */
+  #feed { height: 540px; overflow-y: auto; }
+  .feed-item {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    animation: slideIn .25s ease;
+  }
+  @keyframes slideIn { from { opacity:0; transform: translateY(-8px); } to { opacity:1; transform:none; } }
+  .feed-item:hover { background: var(--surface2); }
+  .feed-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .badge {
+    font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 4px;
+    letter-spacing: .5px;
+  }
+  .badge.PERMIT  { background: #064e3b; color: var(--green); }
+  .badge.DENY    { background: #450a0a; color: var(--red); }
+  .badge.ESCALATE{ background: #451a03; color: var(--yellow); }
+  .feed-agent { font-size: 13px; font-weight: 600; }
+  .feed-action { font-size: 12px; color: var(--muted); flex: 1; text-align: right; }
+  .feed-resource { font-size: 12px; color: var(--accent); margin-bottom: 5px; font-family: monospace; }
+  .feed-explanation { font-size: 12px; color: var(--muted); font-style: italic; }
+  .flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .flag-tag {
+    font-size: 10px; padding: 1px 7px; border-radius: 3px;
+    background: #300; color: #fca5a5; font-family: monospace;
+  }
+
+  /* Trust score meter */
+  .score-meter { margin-top: 8px; }
+  .score-bar-bg { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .score-bar { height: 100%; border-radius: 3px; transition: width .4s ease; }
+
+  /* Right column */
+  .right-col { display: flex; flex-direction: column; gap: 16px; }
+
+  /* Breakdown panel */
+  #breakdown-panel { padding: 18px; }
+  .breakdown-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+  .breakdown-item { margin-bottom: 12px; }
+  .breakdown-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .breakdown-label span:last-child { font-weight: 700; }
+  .bar-bg { height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width .5s ease; }
+
+  /* Mini chart */
+  #score-chart { padding: 16px 18px; }
+  canvas { width: 100%; }
+
+  /* Agents panel */
+  #agents-panel { padding: 14px 18px; }
+  .agent-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .agent-row:last-child { border-bottom: none; }
+  .agent-name { font-weight: 600; }
+  .agent-depth { font-size: 11px; color: var(--muted); }
+  .agent-purpose { font-size: 11px; color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Agent<span>Gate</span> <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:8px;">v0.1 · Context-Aware Trust Authorization</span></div>
+  <div><span class="status-dot"></span><span style="font-size:13px;color:var(--muted)" id="conn-status">Connecting…</span></div>
+</header>
+
+<div class="grid">
+  <div class="stat-card">
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value accent" id="s-total">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Permitted</div>
+    <div class="stat-value green" id="s-permit">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Denied</div>
+    <div class="stat-value red" id="s-deny">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Attack Flags</div>
+    <div class="stat-value yellow" id="s-flags">0</div>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Left: live feed -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="status-dot"></span>
+      Live Authorization Feed
+    </div>
+    <div id="feed"></div>
+  </div>
+
+  <!-- Right column -->
+  <div class="right-col">
+
+    <!-- Last decision breakdown -->
+    <div class="panel">
+      <div class="panel-header">Last Decision Breakdown</div>
+      <div id="breakdown-panel">
+        <div class="breakdown-title" id="bd-title">Waiting for first request…</div>
+        <div class="breakdown-item">
+          <div class="breakdown-label"><span>Identity</span><span id="bd-identity">—</span></div>
+          <div class="bar-bg"><div class="bar-fill" id="bb-identity" style="width:0%;background:#3b82f6"></div></div>
+        </div>
+        <div class="breakdown-item">
+          <div class="breakdown-label"><span>Delegation Chain</span><span id="bd-delegation">—</span></div>
+          <div class="bar-bg"><div class="bar-fill" id="bb-delegation" style="width:0%;background:#6366f1"></div></div>
+        </div>
+        <div class="breakdown-item">
+          <div class="breakdown-label"><span>Purpose Alignment</span><span id="bd-purpose">—</span></div>
+          <div class="bar-bg"><div class="bar-fill" id="bb-purpose" style="width:0%;background:#8b5cf6"></div></div>
+        </div>
+        <div class="breakdown-item">
+          <div class="breakdown-label"><span>Behavioral</span><span id="bd-behavioral">—</span></div>
+          <div class="bar-bg"><div class="bar-fill" id="bb-behavioral" style="width:0%;background:#06b6d4"></div></div>
+        </div>
+        <div class="breakdown-item" style="margin-top:16px;">
+          <div class="breakdown-label" style="font-size:14px;font-weight:700;">
+            <span>Trust Score</span><span id="bd-final" style="font-size:20px;">—</span>
+          </div>
+          <div class="bar-bg" style="height:10px;"><div class="bar-fill" id="bb-final" style="width:0%;background:var(--green)"></div></div>
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted);">
+          Threshold: <span id="bd-threshold">—</span> · Sensitivity: <span id="bd-sensitivity">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trust score chart -->
+    <div class="panel">
+      <div class="panel-header">Trust Score — Last 40 Requests</div>
+      <div style="padding:14px 18px 10px;">
+        <canvas id="scoreCanvas" height="90"></canvas>
+      </div>
+    </div>
+
+    <!-- Registered agents -->
+    <div class="panel">
+      <div class="panel-header">Registered Agents</div>
+      <div id="agents-panel">
+        <div style="color:var(--muted);font-size:13px;">No agents yet.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const WS_URL = `ws://${location.host}/ws`;
+const API   = `http://${location.host}`;
+
+let ws;
+let scoreHistory = []; // {score, decision}
+const MAX_FEED = 80;
+const MAX_CHART = 40;
+
+function drawChart() {
+  const canvas = document.getElementById('scoreCanvas');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const W = rect.width - 36;
+  const H = 90;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid lines at 40, 60, 80
+  ctx.strokeStyle = '#1e2d45';
+  ctx.lineWidth = 1;
+  [40, 60, 80].forEach(y => {
+    const py = H - (y / 100) * H;
+    ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(W, py); ctx.stroke();
+    ctx.fillStyle = '#374151';
+    ctx.font = '9px Inter, sans-serif';
+    ctx.fillText(y, 2, py - 2);
+  });
+
+  if (scoreHistory.length < 2) return;
+
+  const data = scoreHistory.slice(-MAX_CHART);
+  const step = W / (MAX_CHART - 1);
+
+  // Fill under curve
+  ctx.beginPath();
+  data.forEach((d, i) => {
+    const x = i * step;
+    const y = H - (d.score / 100) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.lineTo((data.length - 1) * step, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(59,130,246,0.25)');
+  grad.addColorStop(1, 'rgba(59,130,246,0.01)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.lineWidth = 2;
+  data.forEach((d, i) => {
+    const x = i * step;
+    const y = H - (d.score / 100) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#3b82f6';
+  ctx.stroke();
+
+  // Dots colored by decision
+  data.forEach((d, i) => {
+    const x = i * step;
+    const y = H - (d.score / 100) * H;
+    const color = d.decision === 'PERMIT' ? '#10b981' : d.decision === 'DENY' ? '#ef4444' : '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  });
+}
+
+function scoreColor(s) {
+  if (s >= 75) return 'var(--green)';
+  if (s >= 45) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function setBar(id, val) {
+  const el = document.getElementById(id);
+  if (el) { el.style.width = Math.min(100, val) + '%'; el.style.background = scoreColor(val); }
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function updateStats(data) {
+  setText('s-total',  data.total_requests);
+  setText('s-permit', data.permits);
+  setText('s-deny',   data.denials);
+  setText('s-flags',  data.attack_flags_raised);
+}
+
+function updateBreakdown(data) {
+  const tb = data.trust_breakdown;
+  const dec = data.decision;
+  setText('bd-title', `${dec} — ${data.agent_id} · ${data.action} ${data.resource}`);
+  setText('bd-identity',   tb.identity_score + '/100');
+  setText('bd-delegation', tb.delegation_score + '/100');
+  setText('bd-purpose',    tb.purpose_alignment_score + '/100');
+  setText('bd-behavioral', tb.behavioral_score + '/100');
+  setText('bd-final',      tb.final_score + '/100');
+  setText('bd-threshold',  tb.threshold_required);
+  setText('bd-sensitivity', tb.resource_sensitivity);
+
+  setBar('bb-identity',   tb.identity_score);
+  setBar('bb-delegation', tb.delegation_score);
+  setBar('bb-purpose',    tb.purpose_alignment_score);
+  setBar('bb-behavioral', tb.behavioral_score);
+
+  const finalBar = document.getElementById('bb-final');
+  if (finalBar) {
+    finalBar.style.width = Math.min(100, tb.final_score) + '%';
+    finalBar.style.background = scoreColor(tb.final_score);
+  }
+}
+
+function addFeedItem(data) {
+  const feed = document.getElementById('feed');
+  const div = document.createElement('div');
+  div.className = 'feed-item';
+
+  const flags = data.attack_flags || [];
+  const flagsHtml = flags.length
+    ? `<div class="flags">${flags.map(f => `<span class="flag-tag">${f}</span>`).join('')}</div>`
+    : '';
+
+  const ts = new Date(data.timestamp * 1000).toLocaleTimeString();
+  const score = data.trust_breakdown.final_score;
+  const barColor = scoreColor(score);
+
+  div.innerHTML = `
+    <div class="feed-top">
+      <span class="badge ${data.decision}">${data.decision}</span>
+      <span class="feed-agent">${data.agent_id}</span>
+      <span class="feed-action">${data.action.toUpperCase()} · ${ts}</span>
+    </div>
+    <div class="feed-resource">${data.resource}</div>
+    <div class="score-meter">
+      <div class="score-bar-bg">
+        <div class="score-bar" style="width:${Math.min(100,score)}%;background:${barColor}"></div>
+      </div>
+    </div>
+    <div class="feed-explanation">${data.explanation}</div>
+    ${flagsHtml}
+  `;
+
+  feed.insertBefore(div, feed.firstChild);
+
+  // Trim
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
+async function refreshAgents() {
+  try {
+    const r = await fetch(`${API}/agents`);
+    const agents = await r.json();
+    const panel = document.getElementById('agents-panel');
+    if (!agents.length) {
+      panel.innerHTML = '<div style="color:var(--muted);font-size:13px;">No agents registered.</div>';
+      return;
+    }
+    panel.innerHTML = agents.map(a => `
+      <div class="agent-row">
+        <div>
+          <div class="agent-name">${a.name}</div>
+          <div class="agent-purpose">${a.declared_purpose}</div>
+        </div>
+        <div class="agent-depth" style="text-align:right;">
+          depth <strong>${a.delegation_depth}</strong><br>
+          ${a.delegated_by ? `<span style="color:var(--yellow)">← ${a.delegated_by}</span>` : '<span style="color:var(--green)">root</span>'}
+        </div>
+      </div>
+    `).join('');
+  } catch(e) {}
+}
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    setText('conn-status', 'Connected · Live');
+    document.querySelector('.status-dot').style.background = 'var(--green)';
+  };
+
+  ws.onclose = () => {
+    setText('conn-status', 'Reconnecting…');
+    document.querySelector('.status-dot').style.background = 'var(--red)';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'stats') {
+      updateStats(msg.data);
+    } else if (msg.type === 'decision') {
+      addFeedItem(msg.data);
+      updateBreakdown(msg.data);
+      scoreHistory.push({ score: msg.data.trust_breakdown.final_score, decision: msg.data.decision });
+      if (scoreHistory.length > MAX_CHART) scoreHistory.shift();
+      drawChart();
+      fetch(`${API}/audit/stats`).then(r => r.json()).then(updateStats).catch(()=>{});
+      refreshAgents();
+    }
+  };
+}
+
+// Boot
+connect();
+refreshAgents();
+setInterval(refreshAgents, 5000);
+</script>
+</body>
+</html>

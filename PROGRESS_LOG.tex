@@ -1,0 +1,259 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{lmodern}
+
+% Colors
+\definecolor{permitgreen}{RGB}{16, 185, 129}
+\definecolor{denyred}{RGB}{239, 68, 68}
+\definecolor{escalateyellow}{RGB}{245, 158, 11}
+\definecolor{accentblue}{RGB}{59, 130, 246}
+\definecolor{lightgray}{RGB}{248, 248, 248}
+
+% Header / Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\textcolor{accentblue}{\textbf{AgentGate}} — 14-Day Build Sprint}
+\lhead{ELG5901 | University of Ottawa}
+\rfoot{Page \thepage}
+\lfoot{Last updated: April 17, 2026}
+
+% Section formatting
+\titleformat{\section}{\large\bfseries\color{accentblue}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{center}
+  {\LARGE \textbf{\textcolor{accentblue}{AgentGate}}}\\[4pt]
+  {\large Context-Aware Trust Authorization for Agentic AI Systems}\\[6pt]
+  {\normalsize 14-Day Build Sprint \quad|\quad ELG5901 \quad|\quad University of Ottawa}\\[4pt]
+  {\small Sprint Start: April 17, 2026 \quad|\quad Prof Meeting: $\sim$May 1, 2026}
+\end{center}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.5cm}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{What is AgentGate? (Simple Version)}
+
+A company uses an AI agent to read and summarize documents. That agent has a
+password (token) to access the system.
+
+\textbf{The problem today:} the system only checks the password. It does \textbf{not} check:
+\begin{itemize}[noitemsep]
+  \item Is this agent supposed to be doing \textit{this specific action}?
+  \item Does deleting a salary file make sense for a ``document summarizer''?
+  \item Who gave this agent permission, and was that chain of permission legitimate?
+  \item Is this agent making 30 requests in 5 seconds — suspicious behavior?
+\end{itemize}
+
+\textbf{AgentGate is the missing security layer.} It sits between the AI agent and the
+resource (files, databases, APIs) and evaluates every request before allowing it
+through.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Trust Score — How AgentGate Decides}
+
+Every request receives a score from 0 to 100 on 4 dimensions:
+
+\vspace{0.3cm}
+\begin{tabularx}{\textwidth}{>{\bfseries}l X c}
+  \toprule
+  Dimension & What it checks & Weight \\
+  \midrule
+  Identity & Valid token? Action allowed? Resource in scope? & 25\% \\
+  Delegation Chain & Who authorized this agent? Was scope narrowed at each step? & 25\% \\
+  Purpose Alignment & Does this action match what the agent said it was built to do? & 30\% \\
+  Behavioral & Is the agent making too many requests too fast? Unusual patterns? & 20\% \\
+  \bottomrule
+\end{tabularx}
+\vspace{0.3cm}
+
+The final score is compared against the \textbf{sensitivity of the resource}:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{LOW} sensitivity $\rightarrow$ need score $\geq$ 40 to pass
+  \item \textbf{MEDIUM} sensitivity $\rightarrow$ need score $\geq$ 60
+  \item \textbf{HIGH} sensitivity $\rightarrow$ need score $\geq$ 75
+  \item \textbf{CRITICAL} (passwords, salary) $\rightarrow$ need score $\geq$ 90
+\end{itemize}
+
+\textbf{Result:} \textcolor{permitgreen}{\textbf{PERMIT}} \quad/\quad
+\textcolor{escalateyellow}{\textbf{ESCALATE}} (flag and alert) \quad/\quad
+\textcolor{denyred}{\textbf{DENY}}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Day 1 — April 17, 2026}
+
+\subsection{What We Built}
+
+\textbf{1. The Core Engine (\texttt{core/})}
+\begin{itemize}[noitemsep]
+  \item \texttt{models.py} — defines all data structures: Agent, Request, TrustBreakdown, Decision
+  \item \texttt{trust\_engine.py} — the brain: takes an agent + a request, computes 4 scores, returns a decision
+  \item \texttt{purpose\_engine.py} — uses AI embeddings (sentence-transformers) to compare what an agent \textit{said} it does vs.\ what it is actually \textit{trying to do}. Example: ``summarize documents'' vs.\ ``delete salary.xlsx'' $\rightarrow$ similarity score near 0
+  \item \texttt{audit.py} — saves every decision to a SQLite database with full details
+  \item \texttt{explainer.py} — calls Claude AI (Haiku model) to generate a one-sentence plain-English explanation of why a decision was made
+\end{itemize}
+
+\textbf{2. The Server (\texttt{server/main.py})}
+\begin{itemize}[noitemsep]
+  \item FastAPI web server running on \texttt{localhost:8000}
+  \item Main endpoint: \texttt{/authorize} — the Policy Decision Point
+  \item Additional endpoints: \texttt{/agents/register}, \texttt{/audit/recent}, \texttt{/audit/stats}
+  \item WebSocket (\texttt{/ws}) pushes every decision to the dashboard in real time
+\end{itemize}
+
+\textbf{3. The Dashboard (\texttt{dashboard/index.html})}
+\begin{itemize}[noitemsep]
+  \item Single HTML file — no frameworks, no build step, opens in any browser
+  \item Live feed of every authorization decision with color-coded PERMIT / ESCALATE / DENY badges
+  \item Right panel: 4-bar trust score breakdown for the last decision
+  \item Chart: trust score over last 40 requests — visually shows score dropping during attacks
+  \item Registered agents panel: shows each agent, delegation depth, and who delegated them
+\end{itemize}
+
+\textbf{4. The Simulator (\texttt{simulator/agents.py})}
+\begin{itemize}[noitemsep]
+  \item Fake AI agents that make real HTTP calls to the AgentGate server
+  \item Used to demonstrate 4 attack scenarios in a controlled, repeatable way
+\end{itemize}
+
+\textbf{5. Demo Scripts (\texttt{demo/})}
+\begin{itemize}[noitemsep]
+  \item \texttt{attack\_demo.py} — shows what happens \textbf{without} AgentGate: all attacks succeed, zero detection
+  \item \texttt{protected\_demo.py} — shows what happens \textbf{with} AgentGate: attacks detected and blocked
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{The 4 Attack Scenarios Demonstrated}
+
+\textbf{Attack 1 — Privilege Escalation via Delegation Confusion}
+
+Agent A (manager) delegates to Agent B (sub-agent). Agent B then tries to access
+confidential salary data and perform admin operations it was never authorized for.
+\begin{itemize}[noitemsep]
+  \item \textcolor{denyred}{Without AgentGate:} PERMITTED. Valid token = full access.
+  \item \textcolor{permitgreen}{With AgentGate:} ESCALATE (score 63/100, needs 90 for CRITICAL resource). Sub-sub-agent with scope escalation gets a hard DENY with flag \texttt{SCOPE\_ESCALATION\_AT\_DELEGATION}.
+\end{itemize}
+
+\textbf{Attack 2 — Purpose Drift}
+
+A ``document summarizer'' agent (read-only purpose) starts making write and delete
+calls on confidential files.
+\begin{itemize}[noitemsep]
+  \item \textcolor{denyred}{Without AgentGate:} PERMITTED. Token is valid, actions are in the access control list.
+  \item \textcolor{permitgreen}{With AgentGate:} ESCALATE. Purpose alignment score drops to \textbf{3.23/100} for ``delete hr\_records.csv'' — the system detects that deleting HR records is inconsistent with summarizing PDF documents.
+\end{itemize}
+
+\textbf{Attack 3 — High-Velocity Data Exfiltration}
+
+An agent fires 30 requests in under 10 seconds — classic sign of automated data
+scraping or exfiltration.
+\begin{itemize}[noitemsep]
+  \item \textcolor{denyred}{Without AgentGate:} ALL 30 PERMITTED. No rate awareness.
+  \item \textcolor{permitgreen}{With AgentGate:} First 6 permitted, then behavioral score degrades as velocity exceeds 20 requests/minute. 24 ESCALATE with flag \texttt{HIGH\_VELOCITY:23\_RPM}.
+\end{itemize}
+
+\textbf{Attack 4 — Audit Gap (Accountability Black Hole)}
+
+Malicious actions happen, but logs only show \texttt{DELETE /salary.xlsx | 200 OK} — no
+agent identity, no reason, no delegation chain.
+\begin{itemize}[noitemsep]
+  \item \textcolor{denyred}{Without AgentGate:} Impossible to know who did it, why, or how.
+  \item \textcolor{permitgreen}{With AgentGate:} Every decision logged with agent ID, declared purpose, trust score, delegation chain, and plain-English explanation.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{What is Real vs.\ Simulated}
+
+\vspace{0.3cm}
+\begin{tabularx}{\textwidth}{>{\ttfamily\small}l X c}
+  \toprule
+  \normalfont\textbf{Component} & \textbf{Description} & \textbf{Status} \\
+  \midrule
+  trust\_engine.py & Runs real math on real inputs & \textcolor{permitgreen}{Real} \\
+  purpose\_engine.py & Uses sentence-transformers AI model & \textcolor{permitgreen}{Real} \\
+  Delegation chain detection & Tracks depth and scope attenuation & \textcolor{permitgreen}{Real} \\
+  Behavioral velocity scoring & Queries SQLite request history & \textcolor{permitgreen}{Real} \\
+  Audit trail (SQLite) & Persists across server restarts & \textcolor{permitgreen}{Real} \\
+  WebSocket dashboard & Live push, no polling & \textcolor{permitgreen}{Real} \\
+  Claude-generated explanations & Calls Claude Haiku API & \textcolor{permitgreen}{Real} \\
+  \midrule
+  simulator/agents.py & Python scripts pretending to be agents & \textcolor{escalateyellow}{Simulated} \\
+  Files being ``accessed'' & Paths are strings, no real filesystem & \textcolor{escalateyellow}{Simulated} \\
+  \bottomrule
+\end{tabularx}
+\vspace{0.3cm}
+
+\textbf{Key point:} The security layer is fully implemented. The agents are simulated
+to demonstrate attack patterns in a controlled way. Connecting a real LLM agent
+(LangChain, Claude, GPT-4) to AgentGate is planned for Day 3--4.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{What Works}
+
+\begin{itemize}[noitemsep]
+  \item Server starts with one command: \texttt{python run.py}
+  \item Dashboard connects live via WebSocket and shows real-time decisions
+  \item All 4 attack scenarios are detected as designed
+  \item Explanations correctly identify the weakest score or the attack flag
+  \item Delegation chain is visible on the dashboard (SubAgent-B $\leftarrow$ parent\_agent\_A)
+  \item Trust score chart updates live during the demo
+\end{itemize}
+
+\subsection{What Does Not Work Yet / Known Limitations}
+
+\begin{itemize}[noitemsep]
+  \item Velocity attack results in ESCALATE, not DENY — scoring degrades but never fully denies a low-sensitivity resource read. Tuning needed.
+  \item No real LLM agent connected yet — all agents are simulated scripts.
+  \item No authentication on the AgentGate server itself — anyone can register an agent. Must fix before any production use.
+  \item Explanations use fallback text (no Claude API key configured) — functional but less precise than the AI-generated version.
+  \item Agent registry is in-memory only — agents are lost when the server restarts.
+\end{itemize}
+
+\subsection{Key Numbers from Day 1 Demo}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{83} total requests processed
+  \item \textbf{23} permitted (legitimate traffic)
+  \item \textbf{2} denied (hard blocks)
+  \item \textbf{54} attack flags raised
+  \item Purpose alignment score on \texttt{delete hr\_records.csv} for a summarizer agent: \textbf{3.23/100}
+  \item Trust score on scope-escalation delete attempt: \textbf{55.39/100} $\rightarrow$ DENY
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Day 2 — (Planned)}
+
+\begin{itemize}[noitemsep]
+  \item Natural language policy generator: admin writes ``agents must never access HR files'' $\rightarrow$ Claude converts it to an enforceable policy rule
+  \item Connect a real LLM agent to AgentGate
+  \item Harden velocity attack scoring to produce DENY, not just ESCALATE
+  \item Persistent agent registry (survive server restarts)
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\vspace{1cm}
+\hrule
+\vspace{0.3cm}
+{\small \textit{This document is updated daily throughout the 14-day sprint.
+It serves as both a personal reference and the foundation for the academic report.}}
+
+\end{document}
