@@ -199,9 +199,9 @@ def run_velocity_attack():
         "delegation_depth": 0,
     })
 
-    console.print(f"[yellow]→ Firing 30 rapid requests...[/yellow]")
+    console.print(f"[yellow]→ Firing 50 rapid requests...[/yellow]")
     results = []
-    for i in range(30):
+    for i in range(50):
         r = _authorize("velocity_agent_004", token, "read", f"/reports/file_{i:03d}.pdf", "Monthly export")
         results.append(r["decision"])
 
@@ -209,7 +209,7 @@ def run_velocity_attack():
     escalates = results.count("ESCALATE")
     denials = results.count("DENY")
 
-    console.print(f"\n  Results across 30 requests:")
+    console.print(f"\n  Results across 50 requests:")
     console.print(f"  [green]PERMIT[/green]:   {permits}")
     console.print(f"  [yellow]ESCALATE[/yellow]: {escalates}")
     console.print(f"  [red]DENY[/red]:     {denials}")
