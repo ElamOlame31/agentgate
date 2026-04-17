@@ -4,13 +4,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import uuid
-import time
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,11 +17,15 @@ load_dotenv()
 from core.models import AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision
 from core import audit, trust_engine
 from core.explainer import generate_explanation
+from core.policy_engine import (
+    create_policy, get_all_policies, delete_policy,
+    check_policies, Policy, init_policy_table
+)
 
-# In-memory agent registry
+# Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
 
-# WebSocket connection manager
+
 class ConnectionManager:
     def __init__(self):
         self._connections: list[WebSocket] = []
@@ -32,7 +35,8 @@ class ConnectionManager:
         self._connections.append(ws)
 
     def disconnect(self, ws: WebSocket):
-        self._connections.remove(ws)
+        if ws in self._connections:
+            self._connections.remove(ws)
 
     async def broadcast(self, data: dict):
         dead = []
@@ -51,10 +55,13 @@ manager = ConnectionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     audit.init_db()
+    init_policy_table()
+    # Load persisted agents on startup
+    _agents.update(audit.load_all_agents())
     yield
 
 
-app = FastAPI(title="AgentGate PDP", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AgentGate PDP", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,11 +78,26 @@ async def register_agent(reg: AgentRegistration):
     if not reg.token:
         reg.token = str(uuid.uuid4())
     _agents[reg.agent_id] = reg
+    audit.save_agent(reg)
+    await manager.broadcast({"type": "agents", "data": _agent_list()})
     return {"agent_id": reg.agent_id, "token": reg.token, "status": "registered"}
 
 
 @app.get("/agents", response_model=list)
 async def list_agents():
+    return _agent_list()
+
+
+@app.delete("/agents/{agent_id}")
+async def deregister_agent(agent_id: str):
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    del _agents[agent_id]
+    audit.delete_agent(agent_id)
+    return {"status": "deregistered"}
+
+
+def _agent_list():
     return [
         {
             "agent_id": a.agent_id,
@@ -86,14 +108,6 @@ async def list_agents():
         }
         for a in _agents.values()
     ]
-
-
-@app.delete("/agents/{agent_id}")
-async def deregister_agent(agent_id: str):
-    if agent_id not in _agents:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    del _agents[agent_id]
-    return {"status": "deregistered"}
 
 
 # ── Authorization (PDP) ─────────────────────────────────────────────────────
@@ -111,6 +125,16 @@ async def authorize(request: AuthorizationRequest):
         return response
 
     agent = _agents[request.agent_id]
+
+    # ── Policy check FIRST (hard rules override trust score) ──────────────
+    policy_match = check_policies(request.agent_id, request.action, request.resource)
+    if policy_match.matched:
+        response = _build_policy_blocked_response(request, agent, policy_match)
+        audit.log_decision(response)
+        await manager.broadcast({"type": "decision", "data": response.model_dump()})
+        return response
+
+    # ── Trust scoring ──────────────────────────────────────────────────────
     breakdown, flags = trust_engine.compute_trust(agent, request)
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
@@ -137,13 +161,10 @@ async def authorize(request: AuthorizationRequest):
 def _build_unknown_agent_response(request: AuthorizationRequest) -> AuthorizationResponse:
     from core.models import TrustBreakdown, ResourceSensitivity
     breakdown = TrustBreakdown(
-        identity_score=0,
-        delegation_score=0,
-        purpose_alignment_score=0,
-        behavioral_score=0,
+        identity_score=0, delegation_score=0,
+        purpose_alignment_score=0, behavioral_score=0,
         resource_sensitivity=ResourceSensitivity.CRITICAL,
-        final_score=0,
-        threshold_required=90,
+        final_score=0, threshold_required=90,
     )
     return AuthorizationResponse(
         request_id=request.request_id or str(uuid.uuid4()),
@@ -155,6 +176,59 @@ def _build_unknown_agent_response(request: AuthorizationRequest) -> Authorizatio
         explanation="Denied: agent is not registered in AgentGate — identity cannot be verified.",
         attack_flags=["UNREGISTERED_AGENT"],
     )
+
+
+def _build_policy_blocked_response(
+    request: AuthorizationRequest,
+    agent: AgentRegistration,
+    policy_match
+) -> AuthorizationResponse:
+    from core.models import TrustBreakdown, ResourceSensitivity
+    from core.trust_engine import classify_resource_sensitivity
+    sensitivity = classify_resource_sensitivity(request.resource)
+    breakdown = TrustBreakdown(
+        identity_score=100, delegation_score=100,
+        purpose_alignment_score=100, behavioral_score=100,
+        resource_sensitivity=sensitivity,
+        final_score=100, threshold_required=0,
+    )
+    decision = Decision.DENY if policy_match.policy.effect == "DENY" else Decision.ESCALATE
+    return AuthorizationResponse(
+        request_id=request.request_id,
+        agent_id=request.agent_id,
+        action=request.action,
+        resource=request.resource,
+        decision=decision,
+        trust_breakdown=breakdown,
+        explanation=f"Policy block: {policy_match.reason}",
+        attack_flags=[f"POLICY_VIOLATION:{policy_match.policy.id}"],
+    )
+
+
+# ── Policy Engine ───────────────────────────────────────────────────────────
+
+class PolicyRequest(BaseModel):
+    rule: str
+
+
+@app.post("/policies", response_model=Policy)
+async def add_policy(body: PolicyRequest):
+    policy = create_policy(body.rule)
+    await manager.broadcast({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]})
+    return policy
+
+
+@app.get("/policies", response_model=list[Policy])
+async def list_policies():
+    return get_all_policies()
+
+
+@app.delete("/policies/{policy_id}")
+async def remove_policy(policy_id: str):
+    if not delete_policy(policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    await manager.broadcast({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]})
+    return {"status": "deleted"}
 
 
 # ── Audit & Stats ───────────────────────────────────────────────────────────
@@ -169,16 +243,16 @@ async def stats():
     return audit.get_stats()
 
 
-# ── WebSocket (real-time dashboard feed) ────────────────────────────────────
+# ── WebSocket ───────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     try:
-        # Send current stats on connect
         await ws.send_text(json.dumps({"type": "stats", "data": audit.get_stats()}))
+        await ws.send_text(json.dumps({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]}))
         while True:
-            await ws.receive_text()  # keep-alive
+            await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(ws)
 

@@ -3,7 +3,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from core.models import AuthorizationResponse
+from core.models import AuthorizationResponse, AgentRegistration
 
 DB_PATH = Path(__file__).parent.parent / "agentgate_audit.db"
 
@@ -103,6 +103,43 @@ def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> li
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def save_agent(agent: AgentRegistration):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT OR REPLACE INTO agents VALUES (?,?,?,?,?,?,?,?,?)
+    """, (
+        agent.agent_id, agent.name, agent.declared_purpose,
+        json.dumps(agent.authorized_resources),
+        json.dumps(agent.authorized_actions),
+        agent.delegated_by, agent.delegation_depth,
+        agent.token, time.time()
+    ))
+    conn.commit()
+    conn.close()
+
+
+def load_all_agents() -> dict[str, AgentRegistration]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM agents").fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        d = dict(r)
+        d["authorized_resources"] = json.loads(d["authorized_resources"])
+        d["authorized_actions"] = json.loads(d["authorized_actions"])
+        d.pop("registered_at", None)
+        result[d["agent_id"]] = AgentRegistration(**d)
+    return result
+
+
+def delete_agent(agent_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM agents WHERE agent_id=?", (agent_id,))
+    conn.commit()
+    conn.close()
 
 
 def get_stats() -> dict:

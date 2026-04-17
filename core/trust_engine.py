@@ -94,9 +94,12 @@ def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
 
     if rpm > MAX_RPM:
         excess = rpm - MAX_RPM
-        penalty = min(80.0, excess * 4.0)
+        penalty = min(90.0, excess * 5.0)
         score -= penalty
-        flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
+        if rpm > MAX_RPM * 2:
+            flags.append(f"CRITICAL_VELOCITY:{rpm}_RPM")
+        else:
+            flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
 
     # Check for repeated identical actions (replay-style behavior)
     recent_actions = [h["action"] for h in history[:10]]
@@ -157,7 +160,11 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     score = breakdown.final_score
     threshold = breakdown.threshold_required
 
-    # Hard deny on critical flags regardless of score
+    # Hard deny on critical velocity
+    if any("CRITICAL_VELOCITY" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny on critical security flags regardless of score
     critical_flags = [f for f in flags if any(kw in f for kw in [
         "TOKEN_MISMATCH", "SCOPE_ESCALATION", "UNAUTHORIZED_ACTION"
     ])]
@@ -168,7 +175,7 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
 
     if score >= threshold:
         if flags:
-            return Decision.ESCALATE  # Permit with warning
+            return Decision.ESCALATE
         return Decision.PERMIT
     elif score >= threshold * 0.6:
         return Decision.ESCALATE

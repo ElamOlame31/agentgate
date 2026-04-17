@@ -240,13 +240,73 @@ to demonstrate attack patterns in a controlled way. Connecting a real LLM agent
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Day 2 — (Planned)}
+\section{Day 2 — April 18, 2026}
+
+\subsection{What We Built}
+
+\textbf{1. Natural Language Policy Engine (\texttt{core/policy\_engine.py})}
+
+The biggest enterprise feature. An admin types a plain-English rule and Claude AI
+converts it into an enforceable structured policy stored in SQLite.
+
+Example:
+\begin{itemize}[noitemsep]
+  \item Admin types: \textit{``agents must never delete files in /confidential''}
+  \item Claude converts to: \texttt{\{effect: DENY, action: delete, resource: /confidential/*\}}
+  \item Every future request is checked against this policy \textbf{before} trust scoring
+  \item A DENY policy is a hard block — even a trust score of 100 cannot override it
+\end{itemize}
+
+This is what enterprise buyers pay for: governance written in plain English,
+enforced automatically. No code changes required to add a new rule.
+
+\textbf{2. Persistent Agent Registry}
+\begin{itemize}[noitemsep]
+  \item Agents are now saved to SQLite and reloaded on server restart
+  \item Previously: restart the server = lose all registered agents
+  \item Now: agents persist across restarts — production-ready behavior
+\end{itemize}
+
+\textbf{3. Velocity Attack Hardened to DENY}
+\begin{itemize}[noitemsep]
+  \item Previously: 30 rapid requests produced ESCALATE, never DENY
+  \item Now: requests exceeding $2\times$ the rate limit (40+ RPM) trigger \texttt{CRITICAL\_VELOCITY} flag $\rightarrow$ hard DENY regardless of trust score
+\end{itemize}
+
+\textbf{4. Dashboard Policy Panel}
+\begin{itemize}[noitemsep]
+  \item New panel in the dashboard: type a rule, press Enter or click ``Add''
+  \item Claude converts it live — result appears in under 2 seconds
+  \item Each policy shows: effect (DENY/ESCALATE), action pattern, resource pattern
+  \item Policies can be deleted with one click
+  \item When a policy blocks a request, the feed shows \texttt{POLICY\_VIOLATION} flag
+\end{itemize}
+
+\subsection{What Works}
 
 \begin{itemize}[noitemsep]
-  \item Natural language policy generator: admin writes ``agents must never access HR files'' $\rightarrow$ Claude converts it to an enforceable policy rule
-  \item Connect a real LLM agent to AgentGate
-  \item Harden velocity attack scoring to produce DENY, not just ESCALATE
-  \item Persistent agent registry (survive server restarts)
+  \item Natural language $\rightarrow$ policy conversion works with Claude API (falls back to keyword rules without it)
+  \item Policies are checked before trust scoring — hard rules override soft scores
+  \item Agents survive server restart
+  \item High-velocity attacks (40+ RPM) now produce a hard DENY
+  \item Policy violations appear in the live dashboard feed with \texttt{POLICY\_VIOLATION} flag
+\end{itemize}
+
+\subsection{What Does Not Work Yet}
+
+\begin{itemize}[noitemsep]
+  \item No real LLM agent connected yet — agents are still simulated scripts
+  \item Policy engine requires Claude API key for best results (fallback is functional but less precise)
+  \item No policy conflict resolution (two conflicting policies both apply — last DENY wins)
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Day 3 — (Planned)}
+
+\begin{itemize}[noitemsep]
+  \item Connect a real Claude agent (using Anthropic SDK) to AgentGate — agent calls \texttt{/authorize} before every tool use
+  \item Live demo: real LLM deciding to summarize documents, AgentGate evaluating each file access in real time
+  \item Add \texttt{ESCALATE} notification system (simulate an alert email/webhook)
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +314,7 @@ to demonstrate attack patterns in a controlled way. Connecting a real LLM agent
 \hrule
 \vspace{0.3cm}
 {\small \textit{This document is updated daily throughout the 14-day sprint.
-It serves as both a personal reference and the foundation for the academic report.}}
+It serves as both a personal reference and the foundation for the academic report.
+Last update: April 18, 2026.}}
 
 \end{document}

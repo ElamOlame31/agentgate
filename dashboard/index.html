@@ -193,6 +193,26 @@
       </div>
     </div>
 
+    <!-- Policy engine -->
+    <div class="panel">
+      <div class="panel-header">Policy Engine — Natural Language Rules</div>
+      <div style="padding:12px 18px;">
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <input id="policy-input" type="text"
+            placeholder='e.g. "agents must never delete confidential files"'
+            style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:12px;outline:none;"
+          />
+          <button onclick="addPolicy()"
+            style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;cursor:pointer;font-weight:600;">
+            + Add
+          </button>
+        </div>
+        <div id="policies-list">
+          <div style="color:var(--muted);font-size:12px;">No policies yet. Add one above.</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Registered agents -->
     <div class="panel">
       <div class="panel-header">Registered Agents</div>
@@ -408,6 +428,8 @@ function connect() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'stats') {
       updateStats(msg.data);
+    } else if (msg.type === 'policies') {
+      renderPolicies(msg.data);
     } else if (msg.type === 'decision') {
       addFeedItem(msg.data);
       updateBreakdown(msg.data);
@@ -420,9 +442,73 @@ function connect() {
   };
 }
 
+async function addPolicy() {
+  const input = document.getElementById('policy-input');
+  const rule = input.value.trim();
+  if (!rule) return;
+  input.value = '';
+  input.placeholder = 'Converting with Claude AI…';
+  try {
+    const r = await fetch(`${API}/policies`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rule})
+    });
+    const policy = await r.json();
+    input.placeholder = 'e.g. "agents must never delete confidential files"';
+    refreshPolicies();
+  } catch(e) {
+    input.placeholder = 'Error — is the server running?';
+  }
+}
+
+async function deletePolicy(id) {
+  await fetch(`${API}/policies/${id}`, {method: 'DELETE'});
+  refreshPolicies();
+}
+
+async function refreshPolicies() {
+  try {
+    const r = await fetch(`${API}/policies`);
+    const policies = await r.json();
+    renderPolicies(policies);
+  } catch(e) {}
+}
+
+function renderPolicies(policies) {
+  const el = document.getElementById('policies-list');
+  if (!policies.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;">No policies yet. Add one above.</div>';
+    return;
+  }
+  el.innerHTML = policies.map(p => {
+    const effectColor = p.effect === 'DENY' ? 'var(--red)' : 'var(--yellow)';
+    return `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);">
+        <div style="flex:1;">
+          <div style="font-size:11px;color:var(--muted);font-family:monospace;">
+            <span style="color:${effectColor};font-weight:700;">${p.effect}</span>
+            · ${p.action_pattern} · ${p.resource_pattern}
+          </div>
+          <div style="font-size:12px;color:var(--text);margin-top:2px;font-style:italic;">"${p.description}"</div>
+        </div>
+        <button onclick="deletePolicy('${p.id}')"
+          style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;margin-left:8px;">×</button>
+      </div>
+    `;
+  }).join('');
+}
+
+// Allow Enter key to submit policy
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('policy-input');
+  if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addPolicy(); });
+});
+
 // Boot
 connect();
 refreshAgents();
+refreshPolicies();
 setInterval(refreshAgents, 5000);
 </script>
 </body>
