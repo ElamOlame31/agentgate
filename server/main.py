@@ -21,6 +21,7 @@ from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
     check_policies, Policy, init_policy_table
 )
+from core.alerts import fire_alert, alerts_configured, alert_status
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -56,8 +57,11 @@ manager = ConnectionManager()
 async def lifespan(app: FastAPI):
     audit.init_db()
     init_policy_table()
-    # Load persisted agents on startup
     _agents.update(audit.load_all_agents())
+    if alerts_configured():
+        print(f"[AgentGate] Alerts ON → {alert_status()}")
+    else:
+        print("[AgentGate] Alerts OFF — set AGENTGATE_ALERT_TOPIC in .env to enable")
     yield
 
 
@@ -132,6 +136,12 @@ async def authorize(request: AuthorizationRequest):
         response = _build_policy_blocked_response(request, agent, policy_match)
         audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
+        fire_alert(
+            response.decision.value, request.agent_id,
+            request.action, request.resource,
+            response.explanation, response.attack_flags,
+            response.trust_breakdown.final_score,
+        )
         return response
 
     # ── Trust scoring ──────────────────────────────────────────────────────
@@ -155,6 +165,12 @@ async def authorize(request: AuthorizationRequest):
 
     audit.log_decision(response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})
+    fire_alert(
+        decision.value, request.agent_id,
+        request.action, request.resource,
+        explanation, flags,
+        breakdown.final_score,
+    )
     return response
 
 
