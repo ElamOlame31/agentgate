@@ -14,13 +14,19 @@ Configure in .env:
 import os
 import threading
 import httpx
+from dotenv import load_dotenv
 
+load_dotenv()
 
 NTFY_BASE = "https://ntfy.sh"
-TOPIC = os.getenv("AGENTGATE_ALERT_TOPIC", "")
-WEBHOOK_URL = os.getenv("AGENTGATE_WEBHOOK_URL", "")
-ALERT_ON_ESCALATE = os.getenv("AGENTGATE_ALERT_ON_ESCALATE", "true").lower() == "true"
-ALERT_ON_DENY = os.getenv("AGENTGATE_ALERT_ON_DENY", "true").lower() == "true"
+
+def _get_config():
+    return {
+        "topic": os.getenv("AGENTGATE_ALERT_TOPIC", ""),
+        "webhook": os.getenv("AGENTGATE_WEBHOOK_URL", ""),
+        "on_escalate": os.getenv("AGENTGATE_ALERT_ON_ESCALATE", "true").lower() == "true",
+        "on_deny": os.getenv("AGENTGATE_ALERT_ON_DENY", "true").lower() == "true",
+    }
 
 
 def _send(decision: str, agent_id: str, action: str, resource: str,
@@ -40,72 +46,69 @@ def _send(decision: str, agent_id: str, action: str, resource: str,
     priority = "urgent" if is_deny else "high"
     tags = "rotating_light,shield" if is_deny else "warning,shield"
 
+    cfg = _get_config()
+    topic = cfg["topic"]
+    webhook = cfg["webhook"]
+
     # ── ntfy.sh push notification ─────────────────────────────────────────
-    if TOPIC:
+    if topic:
         try:
-            httpx.post(
-                f"{NTFY_BASE}/{TOPIC}",
+            r = httpx.post(
+                f"{NTFY_BASE}/{topic}",
                 content=body.encode("utf-8"),
                 headers={
                     "Title": title,
                     "Priority": priority,
                     "Tags": tags,
                 },
-                timeout=5.0,
+                timeout=10.0,
             )
-        except Exception:
-            pass
+            print(f"[AgentGate] ntfy.sh response: {r.status_code}", flush=True)
+        except Exception as e:
+            print(f"[AgentGate] Alert error: {e}", flush=True)
 
-    # ── Generic webhook (Slack, Teams, custom) ────────────────────────────
-    if WEBHOOK_URL:
+    # ── Generic webhook ───────────────────────────────────────────────────
+    if webhook:
         try:
-            httpx.post(
-                WEBHOOK_URL,
-                json={
-                    "decision": decision,
-                    "agent_id": agent_id,
-                    "action": action,
-                    "resource": resource,
-                    "score": score,
-                    "flags": flags,
-                    "explanation": explanation,
-                },
-                timeout=5.0,
-            )
-        except Exception:
-            pass
+            httpx.post(webhook, json={
+                "decision": decision, "agent_id": agent_id,
+                "action": action, "resource": resource,
+                "score": score, "flags": flags, "explanation": explanation,
+            }, timeout=5.0)
+        except Exception as e:
+            print(f"[AgentGate] Webhook error: {e}", flush=True)
 
 
 def fire_alert(decision: str, agent_id: str, action: str, resource: str,
                explanation: str, flags: list[str], score: float):
-    """
-    Call this after every ESCALATE or DENY decision.
-    Runs in a background thread — zero latency impact on the main response.
-    """
-    if decision == "DENY" and not ALERT_ON_DENY:
-        return
-    if decision == "ESCALATE" and not ALERT_ON_ESCALATE:
-        return
+    cfg = _get_config()
     if decision == "PERMIT":
         return
-    if not TOPIC and not WEBHOOK_URL:
+    if decision == "DENY" and not cfg["on_deny"]:
+        return
+    if decision == "ESCALATE" and not cfg["on_escalate"]:
+        return
+    if not cfg["topic"] and not cfg["webhook"]:
+        print(f"[AgentGate] Alert skipped — no topic/webhook configured", flush=True)
         return
 
+    print(f"[AgentGate] Firing alert: {decision} {agent_id} {action} {resource}", flush=True)
     thread = threading.Thread(
         target=_send,
         args=(decision, agent_id, action, resource, explanation, flags, score),
-        daemon=True,
+        daemon=False,
     )
     thread.start()
 
 
 def alerts_configured() -> bool:
-    return bool(TOPIC or WEBHOOK_URL)
+    return bool(_get_config()["topic"] or _get_config()["webhook"])
 
 
 def alert_status() -> str:
-    if TOPIC:
-        return f"ntfy.sh/{TOPIC}"
-    if WEBHOOK_URL:
-        return WEBHOOK_URL
+    cfg = _get_config()
+    if cfg["topic"]:
+        return f"ntfy.sh/{cfg['topic']}"
+    if cfg["webhook"]:
+        return cfg["webhook"]
     return "not configured"
