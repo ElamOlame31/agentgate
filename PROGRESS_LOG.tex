@@ -26,7 +26,7 @@
 \rhead{\textcolor{accentblue}{\textbf{AgentGate}} — 14-Day Build Sprint}
 \lhead{ELG5901 | University of Ottawa}
 \rfoot{Page \thepage}
-\lfoot{Last updated: April 17, 2026 (Day 2)}
+\lfoot{Last updated: April 18, 2026 (Day 3)}
 
 % Section formatting
 \titleformat{\section}{\large\bfseries\color{accentblue}}{}{0em}{}[\titlerule]
@@ -301,12 +301,114 @@ enforced automatically. No code changes required to add a new rule.
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Day 3 — (Planned)}
+\section{Day 3 — April 18, 2026}
+
+\subsection{What We Built}
+
+\textbf{1. Dashboard — Full UI/UX Redesign (``Dark Ops Command Center'')}
+
+The dashboard was completely rewritten from scratch with a professional,
+enterprise-grade aesthetic. The goal: make it look like a \$200K security
+product, not a university project.
+
+Key design decisions:
+\begin{itemize}[noitemsep]
+  \item \textbf{Layout:} Full-viewport CSS Grid — header (48px) / left sidebar (260px) / main area. Zero scrolling.
+  \item \textbf{Typography:} JetBrains Mono for all numbers and code, Inter for body text
+  \item \textbf{Color system:} Dark background (\texttt{\#0A0B0D}), cyan accents (\texttt{\#00D4FF}), red for threats (\texttt{\#FF3B5C}), green for permits (\texttt{\#00D084})
+  \item \textbf{Live feed:} Each request row shows status dot, timestamp, agent ID, action + resource path, sensitivity badge (CRITICAL / HIGH / MEDIUM / LOW), and plain-English reason
+  \item \textbf{Blocked rows:} Flash red with border glow when a DENY arrives — visually impossible to miss
+  \item \textbf{Trust score chart:} Smooth Bezier curve with gradient fill; dashed threshold line at 40\%; turns red when average drops below threshold
+  \item \textbf{Threat timeline:} Vertical bar chart of last 20 decisions, color-coded by decision type
+  \item \textbf{Agent cards:} Left panel shows each registered agent with a live trust bar and pulsing red animation when critical
+  \item \textbf{Metric counters:} Animated number bump on every update — Total Requests, Permitted, Blocked, Attack Flags
+  \item \textbf{Clickable stats:} Click any metric card to open a full audit modal with all 200 most recent decisions
+\end{itemize}
+
+\textbf{2. AgentGate SDK (\texttt{sdk/})}
+
+A developer integration package that lets any engineer add AgentGate protection
+to their AI agent in 3 lines of code — no knowledge of the API required.
+
+\textbf{The problem it solves:} Without the SDK, a developer connecting their agent
+to AgentGate must manually build HTTP payloads, handle tokens, manage error
+cases, and write 50+ lines of boilerplate. The SDK eliminates all of that.
+
+Three integration patterns:
+
+\textbf{Pattern A — Explicit check} (call authorize before each action):
+\begin{verbatim}
+gate = AgentGate("http://localhost:8000")
+gate.register("my_agent", "MyBot", "Summarize PDFs",
+              ["/reports/*"], ["read"])
+gate.authorize("read", "/reports/q3.pdf", justification="User requested")
+\end{verbatim}
+
+\textbf{Pattern B — Decorator} (zero extra code in business logic):
+\begin{verbatim}
+@gate.guard("delete", resource_arg="path")
+def delete_file(path: str):
+    ...  # AgentGate checks BEFORE this runs
+\end{verbatim}
+
+\textbf{Pattern C — Context manager} (for one-off operations):
+\begin{verbatim}
+with gate.operation("write", "/confidential/salary.xlsx"):
+    write_file(...)  # blocked before execution if DENY
+\end{verbatim}
+
+Custom exceptions give developers clean error handling:
+\begin{itemize}[noitemsep]
+  \item \texttt{AgentGateDenied} — raised on hard DENY (score too low or policy block)
+  \item \texttt{AgentGateEscalated} — raised on ESCALATE if strict mode is on
+  \item \texttt{AgentGateNotRegistered} — raised immediately if \texttt{authorize()} is called before \texttt{register()}
+\end{itemize}
+
+\subsection{SDK Live Demo Results}
+
+Four scenarios were run against the live AgentGate server (\texttt{python sdk/example.py}):
 
 \begin{itemize}[noitemsep]
-  \item Connect a real Claude agent (using Anthropic SDK) to AgentGate — agent calls \texttt{/authorize} before every tool use
-  \item Live demo: real LLM deciding to summarize documents, AgentGate evaluating each file access in real time
-  \item Add \texttt{ESCALATE} notification system (simulate an alert email/webhook)
+  \item \textbf{Demo 1 — Legitimate agent:} All 3 read requests PERMITTED (scores 91--92/100)
+  \item \textbf{Demo 2 — Purpose drift with decorator:} Reads pass; \texttt{write /confidential/salary.xlsx} ESCALATED (purpose alignment 16.3/100); \texttt{delete /confidential/hr\_records.csv} hard DENIED by policy
+  \item \textbf{Demo 3 — Context manager:} Archive delete PERMITTED; confidential delete BLOCKED by natural language policy
+  \item \textbf{Demo 4 — Unregistered agent:} \texttt{AgentGateNotRegistered} raised locally before any HTTP call is made
+\end{itemize}
+
+\subsection{What Works}
+
+\begin{itemize}[noitemsep]
+  \item New dashboard fully functional — live WebSocket feed, animated counters, chart, threat timeline
+  \item Clicking any metric card opens a real-time audit modal (200 most recent decisions)
+  \item SDK all 3 integration patterns work against the live server
+  \item Decorator and context manager catch attacks transparently — developer writes zero auth code
+  \item Unregistered agent caught before any network call (local validation)
+\end{itemize}
+
+\subsection{What Does Not Work Yet}
+
+\begin{itemize}[noitemsep]
+  \item No real LLM agent connected yet — all agents are still Python scripts simulating requests
+  \item ESCALATE has no real consequences — it flags the request in the log but still allows it through; no alert, no webhook
+  \item SDK is not yet a standalone installable package (\texttt{pip install agentgate-sdk}) — currently lives inside the project folder
+\end{itemize}
+
+\subsection{Key Numbers from Day 3 Demo}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{342} total requests processed (cumulative across all 3 days)
+  \item \textbf{92} permitted, \textbf{15} hard denied, \textbf{231} escalated / flagged
+  \item Purpose alignment score on \texttt{write /confidential/salary.xlsx} for a ``summarizer'' agent: \textbf{16.3/100}
+  \item All 4 SDK demos passed cleanly — zero false positives on legitimate agent
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Day 4 — (Planned)}
+
+\begin{itemize}[noitemsep]
+  \item Connect a real Claude LLM agent (Anthropic SDK) to AgentGate — agent thinks, decides to access files, AgentGate intercepts every tool call in real time
+  \item Live demo: real AI being watched by the security layer — the ``wow'' moment for the professor meeting
+  \item Add ESCALATE consequences: webhook or simulated alert email when a request is flagged
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -315,6 +417,6 @@ enforced automatically. No code changes required to add a new rule.
 \vspace{0.3cm}
 {\small \textit{This document is updated daily throughout the 14-day sprint.
 It serves as both a personal reference and the foundation for the academic report.
-Last update: April 17, 2026.}}
+Last update: April 18, 2026.}}
 
 \end{document}
