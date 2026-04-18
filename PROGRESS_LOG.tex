@@ -412,13 +412,17 @@ Four scenarios were run against the live AgentGate server (\texttt{python sdk/ex
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{90-Day Roadmap — What Comes After the Sprint}
+\section{90-Day Roadmap — The Real Project (Starting May 1, 2026)}
 
-This section documents where AgentGate goes after the 14-day prototype.
-The goal of the sprint is to prove the concept. The goal of the next 90 days
-is to build something a company would actually pay for.
+The 14-day sprint (April 16 -- May 1) is a head start built independently
+before the official project begins. Its purpose: walk into the professor
+meeting with a working prototype instead of a slide deck.
 
-\subsection{Phase 1 — Making the Demo Real (Days 15--30)}
+The 90-day roadmap below is the \textbf{real project} — what gets built
+starting May 1 as a formal research initiative. The sprint proves the concept.
+The 90 days turns it into something a company would actually pay for.
+
+\subsection{Phase 1 — Making the Demo Real (May 1 -- May 30)}
 
 \begin{itemize}[noitemsep]
   \item \textbf{Real file system integration} — replace the fake hardcoded files with actual document reads. AgentGate protects real PDFs, real databases, real APIs instead of demo strings.
@@ -427,7 +431,7 @@ is to build something a company would actually pay for.
   \item \textbf{Multi-agent workflows} — test AgentGate on chains of agents (LangChain, AutoGen) where Agent A delegates to Agent B delegates to Agent C. Verify delegation chain enforcement works at scale.
 \end{itemize}
 
-\subsection{Phase 2 — Enterprise Features (Days 30--60)}
+\subsection{Phase 2 — Enterprise Features (June 1 -- July 1)}
 
 \begin{itemize}[noitemsep]
   \item \textbf{Role-based policies} — policies that apply per agent type, per team, per department. Example: ``HR agents can read salary data, finance agents cannot.''
@@ -437,7 +441,7 @@ is to build something a company would actually pay for.
   \item \textbf{Compliance report export} — one-click PDF showing every decision made by every agent over a time period. What enterprise security teams need for audits (SOC 2, ISO 27001).
 \end{itemize}
 
-\subsection{Phase 3 — The Product (Days 60--90)}
+\subsection{Phase 3 — The Product (July 1 -- August 1)}
 
 \begin{itemize}[noitemsep]
   \item \textbf{AgentGate Cloud} — hosted version. Developer signs up, gets an API endpoint, connects their agent in 3 lines. No self-hosting required.
