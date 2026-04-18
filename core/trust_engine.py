@@ -49,9 +49,20 @@ def score_identity(agent: AgentRegistration, request: AuthorizationRequest) -> t
         flags.append(f"UNAUTHORIZED_ACTION:{request.action}")
         score -= 40.0
 
-    # Check if resource matches any authorized pattern
+    # Check if resource matches any authorized pattern.
+    # Also match the directory itself when pattern ends with /*
+    # e.g. "/documents" should match "/documents/*"
+    def _matches(resource: str, pattern: str) -> bool:
+        if fnmatch.fnmatch(resource, pattern):
+            return True
+        if pattern.endswith("/*"):
+            parent = pattern[:-2]
+            if resource == parent or resource == parent + "/":
+                return True
+        return False
+
     resource_allowed = any(
-        fnmatch.fnmatch(request.resource, pattern)
+        _matches(request.resource, pattern)
         for pattern in agent.authorized_resources
     )
     if not resource_allowed:
