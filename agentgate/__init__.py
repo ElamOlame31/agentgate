@@ -1,31 +1,32 @@
 """
 AgentGate SDK — drop-in trust authorization for AI agents.
 
-Quickstart (3 lines):
+Quickstart:
 
-    from sdk import AgentGate
+    from agentgate import AgentGate
 
     gate = AgentGate("http://localhost:8000")
     gate.register("my_agent", "MyBot", "Summarize PDF reports", ["/reports/*"], ["read"])
 
-    # Option A — explicit check before any tool call
-    result = gate.authorize("read", "/reports/q3.pdf", justification="User requested")
+    # Authorize before any action
+    result = gate.authorize("read", "/reports/q3.pdf")
 
-    # Option B — decorator, raises AgentGateDenied automatically
+    # Decorator style
     @gate.guard("read", resource_arg="path")
     def read_document(path: str) -> str:
         return open(path).read()
 
-    # Option C — silent boolean check
-    if gate.check("delete", "/confidential/salary.xlsx"):
-        delete_file(...)
+    # Scan for prompt injection
+    scan = gate.scan(email_body)
+    if scan["level"] == "injection":
+        raise ValueError("Injection detected — content blocked")
 """
 
 import uuid
 import httpx
 from functools import wraps
 
-from sdk.exceptions import AgentGateDenied, AgentGateEscalated, AgentGateNotRegistered
+from agentgate.exceptions import AgentGateDenied, AgentGateEscalated, AgentGateNotRegistered
 
 
 class AgentGate:
@@ -36,17 +37,19 @@ class AgentGate:
         url:               AgentGate server URL (e.g. "http://localhost:8000")
         raise_on_deny:     If True (default), .authorize() raises AgentGateDenied on DENY
         raise_on_escalate: If True, .authorize() raises AgentGateEscalated on ESCALATE
-        timeout:           HTTP request timeout in seconds (default 10)
+        timeout:           HTTP request timeout in seconds (default 30)
     """
 
     def __init__(
         self,
         url: str,
+        api_key: str = "",
         raise_on_deny: bool = True,
         raise_on_escalate: bool = False,
         timeout: float = 30.0,
     ):
         self.url = url.rstrip("/")
+        self._headers = {"X-API-Key": api_key} if api_key else {}
         self.raise_on_deny = raise_on_deny
         self.raise_on_escalate = raise_on_escalate
         self.timeout = timeout
@@ -65,11 +68,9 @@ class AgentGate:
         delegation_depth: int = 0,
         delegated_by: str | None = None,
         scope_at_delegation: list[str] | None = None,
+        processes_external_content: bool = False,
     ) -> "AgentGate":
-        """Register this agent with AgentGate and store the returned token.
-
-        Returns self so calls can be chained.
-        """
+        """Register this agent with AgentGate. Returns self for chaining."""
         payload: dict = {
             "agent_id": agent_id,
             "name": name,
@@ -77,104 +78,74 @@ class AgentGate:
             "authorized_resources": authorized_resources,
             "authorized_actions": authorized_actions,
             "delegation_depth": delegation_depth,
+            "processes_external_content": processes_external_content,
         }
         if delegated_by:
             payload["delegated_by"] = delegated_by
         if scope_at_delegation:
             payload["scope_at_delegation"] = scope_at_delegation
 
-        r = httpx.post(
-            f"{self.url}/agents/register",
-            json=payload,
-            timeout=self.timeout,
-        )
+        r = httpx.post(f"{self.url}/agents/register", json=payload, headers=self._headers, timeout=self.timeout)
         r.raise_for_status()
-        data = r.json()
         self._agent_id = agent_id
-        self._token = data["token"]
+        self._token = r.json()["token"]
         return self
 
     # ── Authorization ─────────────────────────────────────────────────────────
 
-    def authorize(
-        self,
-        action: str,
-        resource: str,
-        justification: str = "",
-    ) -> dict:
-        """Request authorization from AgentGate before performing an action.
+    def authorize(self, action: str, resource: str, justification: str = "") -> dict:
+        """Request authorization before performing an action.
 
-        Returns the full decision dict:
-            {
-                "decision": "PERMIT" | "ESCALATE" | "DENY",
-                "trust_breakdown": { identity_score, delegation_score, ... },
-                "explanation": "plain-English reason",
-                "attack_flags": [...],
-            }
-
-        Raises:
-            AgentGateNotRegistered: if called before .register()
-            AgentGateDenied:        if decision is DENY (and raise_on_deny=True)
-            AgentGateEscalated:     if decision is ESCALATE (and raise_on_escalate=True)
+        Returns dict with decision, trust_breakdown, explanation, attack_flags.
+        Raises AgentGateDenied on DENY (if raise_on_deny=True).
         """
         if not self._agent_id or not self._token:
-            raise AgentGateNotRegistered(
-                "Call gate.register(...) before gate.authorize()"
-            )
-
-        payload = {
-            "agent_id": self._agent_id,
-            "token": self._token,
-            "action": action,
-            "resource": resource,
-            "justification": justification,
-            "request_id": str(uuid.uuid4()),
-        }
+            raise AgentGateNotRegistered("Call gate.register(...) before gate.authorize()")
 
         r = httpx.post(
             f"{self.url}/authorize",
-            json=payload,
+            headers=self._headers,
+            json={
+                "agent_id": self._agent_id,
+                "token": self._token,
+                "action": action,
+                "resource": resource,
+                "justification": justification,
+                "request_id": str(uuid.uuid4()),
+            },
             timeout=self.timeout,
         )
         r.raise_for_status()
         result = r.json()
-
         decision = result["decision"]
 
         if decision == "DENY" and self.raise_on_deny:
             raise AgentGateDenied(action, resource, result.get("explanation", ""))
-
         if decision == "ESCALATE" and self.raise_on_escalate:
             raise AgentGateEscalated(action, resource, result.get("explanation", ""))
 
         return result
 
+    # ── Content scan ──────────────────────────────────────────────────────────
+
     def scan(self, content: str) -> dict:
-        """Scan document/email content for prompt injection before processing it.
+        """Scan document/email content for prompt injection before processing.
 
-        Returns:
-            {
-                "level": "clean" | "suspicious" | "injection",
-                "confidence": 0.0-1.0,
-                "evidence": "what triggered the detection",
-                "scanned": True | False
-            }
-
-        Example:
-            result = gate.scan(email_body)
-            if result["level"] == "injection":
-                raise ValueError("Injection detected — content blocked")
+        Returns dict with level ("clean"/"suspicious"/"injection"), confidence, evidence.
         """
         if not self._agent_id:
             raise AgentGateNotRegistered("Call gate.register(...) before gate.scan()")
 
         r = httpx.post(
             f"{self.url}/scan",
+            headers=self._headers,
             json={"agent_id": self._agent_id, "content": content},
             timeout=self.timeout,
         )
         r.raise_for_status()
         return r.json()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def check(self, action: str, resource: str, justification: str = "") -> bool:
         """Non-raising boolean check. Returns False on DENY, True otherwise."""
@@ -184,44 +155,29 @@ class AgentGate:
         except AgentGateDenied:
             return False
 
-    # ── Decorator ─────────────────────────────────────────────────────────────
-
     def guard(self, action: str, resource_arg: str = "resource"):
-        """Decorator that calls authorize() before the wrapped function runs.
+        """Decorator — authorizes before the wrapped function runs.
 
-        Args:
-            action:       The action to authorize (e.g. "read", "write", "delete")
-            resource_arg: Name of the function argument that holds the resource path
-
-        Example:
-            @gate.guard("read", resource_arg="path")
-            def read_file(path: str) -> str:
-                return open(path).read()
+        @gate.guard("read", resource_arg="path")
+        def read_file(path: str) -> str:
+            return open(path).read()
         """
         def decorator(func):
             @wraps(func)
             def wrapper(*args, **kwargs):
-                resource = kwargs.get(resource_arg)
-                if resource is None and args:
-                    resource = args[0]
-                resource = str(resource) if resource is not None else "unknown"
-                justification = kwargs.get("justification", f"Calling {func.__name__}")
-                self.authorize(action, resource, justification)
+                resource = kwargs.get(resource_arg) or (args[0] if args else "unknown")
+                self.authorize(action, str(resource), f"Calling {func.__name__}")
                 return func(*args, **kwargs)
             return wrapper
         return decorator
 
-    # ── Context manager ───────────────────────────────────────────────────────
-
     def operation(self, action: str, resource: str, justification: str = ""):
-        """Context manager — authorizes on enter, no-op on exit.
+        """Context manager — authorizes on enter.
 
         with gate.operation("delete", "/confidential/salary.xlsx"):
             delete_file(...)
         """
         return _AuthorizedOperation(self, action, resource, justification)
-
-    # ── Properties ────────────────────────────────────────────────────────────
 
     @property
     def agent_id(self) -> str | None:

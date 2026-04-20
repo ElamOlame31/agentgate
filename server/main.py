@@ -6,7 +6,7 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,7 +14,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from core.models import AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision
+# ── API Key Auth ─────────────────────────────────────────────────────────────
+
+def _get_api_key() -> str | None:
+    return os.getenv("AGENTGATE_API_KEY", "").strip() or None
+
+async def require_api_key(request: Request):
+    api_key = _get_api_key()
+    if api_key is None:
+        return  # auth disabled — no key configured
+    provided = request.headers.get("X-API-Key", "")
+    if provided != api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key. Set X-API-Key header.")
+
+
+from core.models import (
+    AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
+    ContentScanRequest, ContentScanResponse,
+)
 from core import audit, trust_engine
 from core.explainer import generate_explanation
 from core.policy_engine import (
@@ -58,6 +75,10 @@ async def lifespan(app: FastAPI):
     audit.init_db()
     init_policy_table()
     _agents.update(audit.load_all_agents())
+    if _get_api_key():
+        print("[AgentGate] Auth ON  — API key required on all endpoints")
+    else:
+        print("[AgentGate] Auth OFF — set AGENTGATE_API_KEY in .env to enable")
     if alerts_configured():
         print(f"[AgentGate] Alerts ON → {alert_status()}")
     else:
@@ -77,7 +98,7 @@ app.add_middleware(
 
 # ── Agent Registration ──────────────────────────────────────────────────────
 
-@app.post("/agents/register", response_model=dict)
+@app.post("/agents/register", response_model=dict, dependencies=[Depends(require_api_key)])
 async def register_agent(reg: AgentRegistration):
     if not reg.token:
         reg.token = str(uuid.uuid4())
@@ -116,7 +137,7 @@ def _agent_list():
 
 # ── Authorization (PDP) ─────────────────────────────────────────────────────
 
-@app.post("/authorize", response_model=AuthorizationResponse)
+@app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
 async def authorize(request: AuthorizationRequest):
     if not request.request_id:
         request.request_id = str(uuid.uuid4())
@@ -174,6 +195,66 @@ async def authorize(request: AuthorizationRequest):
     return response
 
 
+# ── Content Scan (Injection Detection) ─────────────────────────────────────
+
+@app.post("/scan", response_model=ContentScanResponse, dependencies=[Depends(require_api_key)])
+async def scan_content_endpoint(body: ContentScanRequest):
+    from core.injection_detector import should_scan, scan_content
+    from core.trust_engine import classify_resource_sensitivity
+
+    agent = _agents.get(body.agent_id)
+    if agent is None:
+        return ContentScanResponse(
+            level="clean", confidence=0.0,
+            evidence="Agent not registered — scan skipped",
+            scanned=False,
+        )
+
+    # Use agent metadata for Layer 1 check (assume HIGH sensitivity for external content)
+    eligible = should_scan(
+        processes_external_content=agent.processes_external_content,
+        authorized_actions=agent.authorized_actions,
+        resource_sensitivity="HIGH",
+    )
+
+    if not eligible:
+        return ContentScanResponse(
+            level="clean", confidence=0.0,
+            evidence="Agent not eligible for content scanning (processes_external_content=False)",
+            scanned=False,
+        )
+
+    result = scan_content(body.content, agent.declared_purpose)
+
+    # Broadcast to dashboard
+    await manager.broadcast({
+        "type": "injection",
+        "data": {
+            "agent_id": body.agent_id,
+            "level": result.level,
+            "confidence": result.confidence,
+            "evidence": result.evidence,
+            "timestamp": __import__("time").time(),
+        }
+    })
+
+    # Fire alert on injection detection
+    if result.level in ("injection", "suspicious"):
+        fire_alert(
+            "INJECTION_" + result.level.upper(),
+            body.agent_id, "content_scan", "external_content",
+            result.evidence, [f"INJECTION_{result.level.upper()}"],
+            round(result.confidence * 100, 1),
+        )
+
+    return ContentScanResponse(
+        level=result.level,
+        confidence=result.confidence,
+        evidence=result.evidence,
+        scanned=True,
+    )
+
+
 def _build_unknown_agent_response(request: AuthorizationRequest) -> AuthorizationResponse:
     from core.models import TrustBreakdown, ResourceSensitivity
     breakdown = TrustBreakdown(
@@ -227,7 +308,7 @@ class PolicyRequest(BaseModel):
     rule: str
 
 
-@app.post("/policies", response_model=Policy)
+@app.post("/policies", response_model=Policy, dependencies=[Depends(require_api_key)])
 async def add_policy(body: PolicyRequest):
     policy = create_policy(body.rule)
     await manager.broadcast({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]})
@@ -239,7 +320,7 @@ async def list_policies():
     return get_all_policies()
 
 
-@app.delete("/policies/{policy_id}")
+@app.delete("/policies/{policy_id}", dependencies=[Depends(require_api_key)])
 async def remove_policy(policy_id: str):
     if not delete_policy(policy_id):
         raise HTTPException(status_code=404, detail="Policy not found")

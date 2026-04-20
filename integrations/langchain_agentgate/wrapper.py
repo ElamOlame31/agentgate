@@ -35,9 +35,11 @@ def _infer_action(tool_name: str) -> str:
 
 
 def _authorize(agentgate_url: str, agent_id: str, token: str,
-               action: str, resource: str, justification: str) -> dict:
+               action: str, resource: str, justification: str,
+               headers: dict = {}) -> dict:
     r = httpx.post(
         f"{agentgate_url}/authorize",
+        headers=headers,
         json={
             "agent_id": agent_id,
             "token": token,
@@ -52,6 +54,18 @@ def _authorize(agentgate_url: str, agent_id: str, token: str,
     return r.json()
 
 
+def _scan_content(agentgate_url: str, agent_id: str, content: str,
+                  headers: dict = {}) -> dict:
+    r = httpx.post(
+        f"{agentgate_url}/scan",
+        headers=headers,
+        json={"agent_id": agent_id, "content": content},
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 class AgentGateToolWrapper:
     """
     Wraps a LangChain tool: returns a new tool with the same schema
@@ -59,11 +73,14 @@ class AgentGateToolWrapper:
     """
 
     def __init__(self, original_tool: BaseTool, agentgate_url: str,
-                 agent_id: str, token: str):
+                 agent_id: str, token: str, processes_external_content: bool = False,
+                 api_key: str = ""):
         self.original_tool = original_tool
         self.agentgate_url = agentgate_url
         self.agent_id = agent_id
         self.token = token
+        self.processes_external_content = processes_external_content
+        self._headers = {"X-API-Key": api_key} if api_key else {}
         self.wrapped = self._build()
 
     def _build(self) -> BaseTool:
@@ -71,25 +88,23 @@ class AgentGateToolWrapper:
         agentgate_url = self.agentgate_url
         agent_id = self.agent_id
         token = self.token
+        processes_external_content = self.processes_external_content
+        headers = self._headers
 
-        # Build a new tool function with the same schema
-        # by copying the original tool's args_schema
         original_func = original.func if hasattr(original, "func") else None
 
         if original_func is None:
-            # Can't wrap without the original function — return as-is
             return original
 
         import functools
 
         @functools.wraps(original_func)
         def guarded(*args, **kwargs):
-            # Determine resource and action
             resource = _extract_resource(kwargs if kwargs else (args[0] if args else ""))
             action = _infer_action(original.name)
             justification = f"LangChain agent calling {original.name}"
 
-            result = _authorize(agentgate_url, agent_id, token, action, resource, justification)
+            result = _authorize(agentgate_url, agent_id, token, action, resource, justification, headers)
             decision = result["decision"]
             score = result["trust_breakdown"]["final_score"]
             explanation = result["explanation"]
@@ -105,6 +120,24 @@ class AgentGateToolWrapper:
             # Execute the real tool
             output = original_func(*args, **kwargs)
 
+            # Injection scan: only for read actions on agents that handle external content
+            if action == "read" and processes_external_content and isinstance(output, str):
+                scan = _scan_content(agentgate_url, agent_id, output, headers)
+                if scan.get("scanned") and scan.get("level") == "injection":
+                    return (
+                        f"CONTENT BLOCKED by AgentGate injection detector.\n"
+                        f"Resource: '{resource}'\n"
+                        f"Detection: {scan['evidence']}\n"
+                        f"Confidence: {scan['confidence']:.0%}\n"
+                        f"The document contains prompt injection instructions. "
+                        f"Content has been withheld to protect agent integrity."
+                    )
+                elif scan.get("scanned") and scan.get("level") == "suspicious":
+                    output = (
+                        f"{output}\n\n"
+                        f"[AgentGate WARNING: suspicious content detected — {scan['evidence']}]"
+                    )
+
             if decision == "ESCALATE":
                 return (
                     f"{output}\n\n"
@@ -113,7 +146,6 @@ class AgentGateToolWrapper:
 
             return output
 
-        # Create new tool preserving original name and description
         guarded.__name__ = original.name
         guarded.__doc__ = original.description
         wrapped_tool = lc_tool(guarded)

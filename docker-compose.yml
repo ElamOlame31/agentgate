@@ -1,0 +1,21 @@
+services:
+  agentgate:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - agentgate_data:/app/data
+    environment:
+      - AGENTGATE_PORT=8000
+      - AGENTGATE_ALERT_TOPIC=${AGENTGATE_ALERT_TOPIC:-}
+      - AGENTGATE_WEBHOOK_URL=${AGENTGATE_WEBHOOK_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/audit/stats')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  agentgate_data:

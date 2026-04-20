@@ -16,4 +16,5 @@ if __name__ == "__main__":
     print(f"\n  AgentGate PDP starting on http://localhost:{port}")
     print(f"  Dashboard: http://localhost:{port}/")
     print(f"  API docs:  http://localhost:{port}/docs\n")
-    uvicorn.run("server.main:app", host="0.0.0.0", port=port, reload=True)
+    reload = os.environ.get("AGENTGATE_DEV", "false").lower() == "true"
+    uvicorn.run("server.main:app", host="0.0.0.0", port=port, reload=reload)

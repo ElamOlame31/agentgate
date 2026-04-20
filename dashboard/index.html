@@ -585,6 +585,30 @@ function addFeedItem(data) {
   while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
 }
 
+// ── Injection feed item ───────────────────────────────────────────────────
+
+function addInjectionFeedItem(data) {
+  const feed  = document.getElementById('feed');
+  const row   = document.createElement('div');
+  const ts    = new Date(data.timestamp * 1000).toLocaleTimeString();
+  const isInj = data.level === 'injection';
+  const label = isInj ? 'INJECTION' : 'SUSPICIOUS';
+  const pct   = Math.round(data.confidence * 100);
+
+  row.className = 'req-row' + (isInj ? ' blocked' : '');
+  row.style.borderLeft = isInj ? '3px solid var(--red)' : '3px solid var(--orange)';
+  row.innerHTML = `
+    <span class="req-dot ${isInj ? 'deny' : 'escalate'}"></span>
+    <span class="req-time">${ts}</span>
+    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
+    <span class="req-path"><span class="action" style="background:${isInj ? 'var(--red)' : 'var(--orange)'};color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;">${label}</span> content_scan</span>
+    <span class="score-badge" style="background:${isInj ? 'rgba(255,59,92,.15)' : 'rgba(245,158,11,.15)'};color:${isInj ? 'var(--red)' : 'var(--orange)'};">${pct}%</span>
+    <span class="req-reason" title="${data.evidence}">${data.evidence}</span>
+  `;
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
 // ── Last decision ─────────────────────────────────────────────────────────
 
 function updateLastDecision(data) {
@@ -901,6 +925,8 @@ function connect() {
       updateTimeline();
       fetch(`${API}/audit/stats`).then(r=>r.json()).then(updateStats).catch(()=>{});
       refreshAgents();
+    } else if (msg.type === 'injection') {
+      addInjectionFeedItem(msg.data);
     }
   };
 }

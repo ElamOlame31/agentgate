@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentgate"
+version = "0.1.0"
+description = "Context-aware trust authorization for agentic AI systems"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "AgentGate", email = "olame109@gmail.com" }
+]
+keywords = ["ai", "agents", "security", "authorization", "llm", "langchain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+langchain = [
+    "langchain-core>=0.3.0",
+    "langchain-anthropic>=0.2.0",
+    "langgraph>=0.2.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/agentgate/agentgate"
+Documentation = "https://agentgate.dev/docs"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentgate*"]

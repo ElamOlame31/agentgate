@@ -25,17 +25,23 @@ class AgentGateToolkit:
         authorized_resources: list[str],
         authorized_actions: list[str],
         delegation_depth: int = 0,
+        processes_external_content: bool = False,
+        api_key: str = "",
     ):
         self.agentgate_url = agentgate_url.rstrip("/")
         self.agent_id = agent_id
+        self.processes_external_content = processes_external_content
+        self._headers = {"X-API-Key": api_key} if api_key else {}
         self.token = self._register(
             agent_id, name, declared_purpose,
-            authorized_resources, authorized_actions, delegation_depth
+            authorized_resources, authorized_actions,
+            delegation_depth, processes_external_content,
         )
 
-    def _register(self, agent_id, name, purpose, resources, actions, depth) -> str:
+    def _register(self, agent_id, name, purpose, resources, actions, depth, ext_content) -> str:
         r = httpx.post(
             f"{self.agentgate_url}/agents/register",
+            headers=self._headers,
             json={
                 "agent_id": agent_id,
                 "name": name,
@@ -43,6 +49,7 @@ class AgentGateToolkit:
                 "authorized_resources": resources,
                 "authorized_actions": actions,
                 "delegation_depth": depth,
+                "processes_external_content": ext_content,
             },
             timeout=15.0,
         )
@@ -59,6 +66,8 @@ class AgentGateToolkit:
                 agentgate_url=self.agentgate_url,
                 agent_id=self.agent_id,
                 token=self.token,
+                processes_external_content=self.processes_external_content,
+                api_key=next(iter(self._headers.values()), "") if self._headers else "",
             )
             wrapped.append(w.get())
         return wrapped

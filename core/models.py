@@ -27,6 +27,7 @@ class AgentRegistration(BaseModel):
     delegation_depth: int = 0
     scope_at_delegation: Optional[List[str]] = None
     token: Optional[str] = None
+    processes_external_content: bool = False  # triggers content scanning on read
 
 
 class AuthorizationRequest(BaseModel):
@@ -37,6 +38,19 @@ class AuthorizationRequest(BaseModel):
     token: Optional[str] = None
     request_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
+
+
+class ContentScanRequest(BaseModel):
+    agent_id: str
+    content: str
+    declared_purpose: Optional[str] = ""
+
+
+class ContentScanResponse(BaseModel):
+    level: str          # "clean", "suspicious", "injection"
+    confidence: float
+    evidence: str
+    scanned: bool       # False if scan was skipped (agent not eligible)
 
 
 class TrustBreakdown(BaseModel):
