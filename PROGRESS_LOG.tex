@@ -68,6 +68,119 @@ resource (files, databases, APIs) and evaluates every request before allowing it
 through.
 
 % ─────────────────────────────────────────────────────────────────────────────
+\section{Research Foundation — Why Traditional Access Control Fails for Agents}
+
+\subsection{The Structural Gap}
+
+Traditional access control models — RBAC, ABAC, and OAuth — were designed
+for a world where the entity requesting access is a human, or a static
+application acting on behalf of a human. These models answer one question:
+\textit{``Is this identity allowed to perform this action on this resource?''}
+
+For human users and traditional software, this is sufficient. Humans have
+stable roles, predictable behavior, and accountable intentions. A payroll
+application that reads salary data does exactly that — reads salary data —
+every time it runs.
+
+Agentic AI systems break every assumption this model was built on.
+
+\subsection{Why RBAC Fails for Agents}
+
+Role-Based Access Control assigns permissions to roles, and roles to identities.
+An agent registered as ``document-summarizer'' would receive the
+\texttt{READER} role, granting read access to the documents directory.
+
+\textbf{The failure:} RBAC cannot distinguish between:
+\begin{itemize}[noitemsep]
+  \item A document summarizer reading \texttt{/documents/q3\_report.pdf} (legitimate)
+  \item A document summarizer reading \texttt{/confidential/salary\_data.xlsx} (out of scope)
+  \item A document summarizer that has been hijacked reading \texttt{/system/api\_keys.txt} (attack)
+\end{itemize}
+
+All three pass RBAC if the agent holds the \texttt{READER} role. RBAC checks
+\textit{who you are}, not \textit{what you are doing or why}.
+
+\textbf{Demonstrated:} In our attack demo, an agent with a valid token reading
+salary data passes every RBAC check. Without AgentGate, the access is permitted.
+With AgentGate, the purpose alignment score drops to 17/100 — the system
+detects that reading salary data is inconsistent with summarizing PDF reports.
+
+\subsection{Why ABAC Fails for Agents}
+
+Attribute-Based Access Control extends RBAC by adding conditions:
+\textit{``Allow read if agent.role = READER AND resource.sensitivity $\leq$ MEDIUM.''}
+
+This is more expressive but still fundamentally static. ABAC policies are written
+by humans at system design time, based on anticipated use cases. Agentic systems
+are dynamic — they acquire new capabilities, delegate to sub-agents, chain
+decisions, and operate in contexts their designers never anticipated.
+
+\textbf{The failure:} ABAC cannot evaluate:
+\begin{itemize}[noitemsep]
+  \item Whether the \textit{declared purpose} of the agent matches its \textit{current action}
+  \item Whether a delegation chain has silently expanded scope at some step
+  \item Whether an agent's behavior pattern has shifted (30 requests in 10 seconds)
+  \item Whether the content an agent is about to process has been injected with malicious instructions
+\end{itemize}
+
+ABAC checks \textit{attributes at request time}. It has no model of agent intent,
+no memory of agent history, and no understanding of agent behavior over time.
+
+\subsection{Why OAuth Fails for Agents}
+
+OAuth was designed for delegated authorization: a human grants a third-party
+application access to their resources. The human is the principal. The
+application acts on the human's behalf, with the human's consent.
+
+In agentic systems, there is no human in the loop. Agent A spawns Agent B,
+which spawns Agent C. Each delegation step may occur automatically, without
+human review. OAuth's trust model — rooted in human consent — has no mechanism
+to handle this.
+
+\textbf{The failure:} OAuth cannot enforce:
+\begin{itemize}[noitemsep]
+  \item That delegated scope is \textit{narrower} than the parent scope (scope attenuation)
+  \item That delegation chains beyond a certain depth are suspicious
+  \item That a sub-agent is not claiming permissions its parent never had
+\end{itemize}
+
+In our delegation attack scenario, Agent B claims admin permissions that Agent A
+never authorized. OAuth sees a valid token. AgentGate raises
+\texttt{SCOPE\_ESCALATION\_AT\_DELEGATION} and denies the request.
+
+\subsection{The Fundamental Requirement: Intent-Driven Authorization}
+
+The gap shared by RBAC, ABAC, and OAuth is the same: they evaluate
+\textit{identity and attributes}, not \textit{intent and behavior}.
+
+For agentic AI systems, access control must evaluate:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{Does the action match the agent's declared purpose?} (Intent alignment)
+  \item \textbf{Was the delegation chain legitimate at every step?} (Trust propagation)
+  \item \textbf{Is the agent's current behavior consistent with its historical pattern?} (Behavioral trust)
+  \item \textbf{Has the content the agent is about to process been tampered with?} (Content integrity)
+\end{enumerate}
+
+This is the design space AgentGate occupies. The authorization decision is not
+binary (allowed/denied based on role) but a \textbf{continuous trust score}
+computed across four dimensions, compared against a sensitivity threshold
+calibrated to the resource being accessed.
+
+\vspace{0.3cm}
+\begin{tabularx}{\textwidth}{>{\bfseries}l X X}
+  \toprule
+  Model & What it checks & What it misses \\
+  \midrule
+  RBAC & Identity + Role & Intent, behavior, delegation depth \\
+  ABAC & Identity + Attributes & Intent, behavior over time, chain legitimacy \\
+  OAuth & Delegated consent & Scope attenuation, chain depth, agent autonomy \\
+  \textbf{AgentGate} & \textbf{Identity + Intent + Delegation + Behavior} & \textbf{Nothing in this list} \\
+  \bottomrule
+\end{tabularx}
+\vspace{0.3cm}
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{The Trust Score — How AgentGate Decides}
 
 Every request receives a score from 0 to 100 on 4 dimensions:
