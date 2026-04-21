@@ -39,9 +39,22 @@ def init_db():
             delegated_by TEXT,
             delegation_depth INTEGER,
             token TEXT,
-            registered_at REAL
+            registered_at REAL,
+            processes_external_content INTEGER DEFAULT 0,
+            requires_human_approval INTEGER DEFAULT 0,
+            scope_at_delegation TEXT DEFAULT NULL
         )
     """)
+    # Migrate existing tables that predate these columns
+    for col, default in [
+        ("processes_external_content", "0"),
+        ("requires_human_approval", "0"),
+        ("scope_at_delegation", "NULL"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
+        except Exception:
+            pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS request_history (
             id TEXT PRIMARY KEY,
@@ -108,13 +121,20 @@ def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> li
 def save_agent(agent: AgentRegistration):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
-        INSERT OR REPLACE INTO agents VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT OR REPLACE INTO agents
+        (agent_id, name, declared_purpose, authorized_resources, authorized_actions,
+         delegated_by, delegation_depth, token, registered_at,
+         processes_external_content, requires_human_approval, scope_at_delegation)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         agent.agent_id, agent.name, agent.declared_purpose,
         json.dumps(agent.authorized_resources),
         json.dumps(agent.authorized_actions),
         agent.delegated_by, agent.delegation_depth,
-        agent.token, time.time()
+        agent.token, time.time(),
+        int(agent.processes_external_content),
+        int(agent.requires_human_approval),
+        json.dumps(agent.scope_at_delegation) if agent.scope_at_delegation else None,
     ))
     conn.commit()
     conn.close()
@@ -130,6 +150,10 @@ def load_all_agents() -> dict[str, AgentRegistration]:
         d = dict(r)
         d["authorized_resources"] = json.loads(d["authorized_resources"])
         d["authorized_actions"] = json.loads(d["authorized_actions"])
+        d["processes_external_content"] = bool(d.get("processes_external_content", 0))
+        d["requires_human_approval"] = bool(d.get("requires_human_approval", 0))
+        raw_scope = d.get("scope_at_delegation")
+        d["scope_at_delegation"] = json.loads(raw_scope) if raw_scope else None
         d.pop("registered_at", None)
         result[d["agent_id"]] = AgentRegistration(**d)
     return result

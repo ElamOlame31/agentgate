@@ -40,6 +40,7 @@ from core.policy_engine import (
 )
 from core.alerts import fire_alert, fire_approval_request, alerts_configured, alert_status
 from core import approvals
+from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -119,6 +120,68 @@ async def list_agents():
     return _agent_list()
 
 
+class DelegationRequest(BaseModel):
+    parent_agent_id: str
+    parent_token: str
+    child_agent_id: str
+    child_name: str
+    child_declared_purpose: str
+    child_resources: list[str]
+    child_actions: list[str]
+    child_declared_purpose_detail: str = ""
+
+
+@app.post("/agents/delegate", response_model=dict, dependencies=[Depends(require_api_key)])
+async def delegate_agent(req: DelegationRequest):
+    if req.parent_agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Parent agent not found")
+
+    parent = _agents[req.parent_agent_id]
+
+    if parent.token and req.parent_token != parent.token:
+        raise HTTPException(status_code=401, detail="Invalid parent agent token")
+
+    if parent.delegation_depth >= MAX_DELEGATION_DEPTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Max delegation depth ({MAX_DELEGATION_DEPTH}) reached — chain too deep"
+        )
+
+    valid, error = validate_delegation(
+        parent.authorized_resources, parent.authorized_actions,
+        req.child_resources, req.child_actions,
+    )
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"Scope violation: {error}")
+
+    child = AgentRegistration(
+        agent_id=req.child_agent_id,
+        name=req.child_name,
+        declared_purpose=req.child_declared_purpose,
+        authorized_resources=req.child_resources,
+        authorized_actions=req.child_actions,
+        delegated_by=req.parent_agent_id,
+        delegation_depth=parent.delegation_depth + 1,
+        scope_at_delegation=parent.authorized_resources + parent.authorized_actions,
+        token=str(uuid.uuid4()),
+    )
+    _agents[child.agent_id] = child
+    audit.save_agent(child)
+    await manager.broadcast({"type": "agents", "data": _agent_list()})
+    print(
+        f"[AgentGate] Delegated: {req.parent_agent_id} -> {req.child_agent_id} "
+        f"(depth {child.delegation_depth})",
+        flush=True
+    )
+    return {
+        "agent_id": child.agent_id,
+        "token": child.token,
+        "delegation_depth": child.delegation_depth,
+        "delegated_by": child.delegated_by,
+        "status": "delegated",
+    }
+
+
 @app.delete("/agents/{agent_id}")
 async def deregister_agent(agent_id: str):
     if agent_id not in _agents:
@@ -136,6 +199,7 @@ def _agent_list():
             "declared_purpose": a.declared_purpose,
             "delegation_depth": a.delegation_depth,
             "delegated_by": a.delegated_by,
+            "chain": chain_summary(a.agent_id, _agents),
         }
         for a in _agents.values()
     ]
@@ -172,7 +236,7 @@ async def authorize(request: AuthorizationRequest):
         return response
 
     # ── Trust scoring ──────────────────────────────────────────────────────
-    breakdown, flags = trust_engine.compute_trust(agent, request)
+    breakdown, flags = trust_engine.compute_trust(agent, request, _agents)
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
         agent.name, request.action, request.resource,

@@ -72,16 +72,33 @@ def score_identity(agent: AgentRegistration, request: AuthorizationRequest) -> t
     return max(0.0, score), flags
 
 
-def score_delegation(agent: AgentRegistration) -> tuple[float, list[str]]:
+def score_delegation(
+    agent: AgentRegistration,
+    request: "AuthorizationRequest",
+    agents: dict,
+) -> tuple[float, list[str]]:
+    from core.delegation import (
+        check_chain_scope, compute_chain_trust_multiplier, MAX_DELEGATION_DEPTH
+    )
     flags = []
     score = 100.0
+    depth = agent.delegation_depth
 
     # Penalize deep delegation chains
-    depth = agent.delegation_depth
     if depth > 0:
         score -= depth * 15.0
 
-    # Check scope attenuation: delegated scope should be narrower
+    # Walk full chain — block if request exceeds any ancestor's scope
+    if depth > 0:
+        chain_ok, chain_error = check_chain_scope(
+            agent.agent_id, request.action, request.resource, agents
+        )
+        if not chain_ok:
+            flags.append("CHAIN_SCOPE_VIOLATION")
+            flags.append(f"VIOLATION_DETAIL:{chain_error[:80]}")
+            score = 0.0  # hard zero — cannot proceed
+
+    # Legacy single-level scope check
     if agent.delegated_by and agent.scope_at_delegation:
         current_scope = set(agent.authorized_actions)
         parent_scope = set(agent.scope_at_delegation)
@@ -89,9 +106,13 @@ def score_delegation(agent: AgentRegistration) -> tuple[float, list[str]]:
             flags.append("SCOPE_ESCALATION_AT_DELEGATION")
             score -= 50.0
 
-    if depth > 3:
+    if depth > MAX_DELEGATION_DEPTH:
         flags.append(f"EXCESSIVE_DELEGATION_DEPTH:{depth}")
-        score -= 20.0
+        score = 0.0
+
+    # Apply chain trust decay
+    multiplier = compute_chain_trust_multiplier(depth)
+    score = score * multiplier
 
     return max(0.0, score), flags
 
@@ -123,14 +144,15 @@ def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
 
 def compute_trust(
     agent: AgentRegistration,
-    request: AuthorizationRequest
+    request: AuthorizationRequest,
+    agents: dict = None,
 ) -> tuple[TrustBreakdown, list[str]]:
     all_flags = []
 
     id_score, id_flags = score_identity(agent, request)
     all_flags.extend(id_flags)
 
-    del_score, del_flags = score_delegation(agent)
+    del_score, del_flags = score_delegation(agent, request, agents or {})
     all_flags.extend(del_flags)
 
     purpose_score = compute_purpose_score(
@@ -175,9 +197,21 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     if any("CRITICAL_VELOCITY" in f for f in flags):
         return Decision.DENY
 
-    # Hard deny on critical security flags regardless of score
+    # Hard deny on delegation chain violations — always, regardless of sensitivity
+    if any("CHAIN_SCOPE_VIOLATION" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny on unauthorized action — agent doing something outside its contract
+    if any("UNAUTHORIZED_ACTION" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny when agent accesses resources outside its declared scope
+    if any("RESOURCE_OUT_OF_SCOPE" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny on critical security flags for sensitive resources
     critical_flags = [f for f in flags if any(kw in f for kw in [
-        "TOKEN_MISMATCH", "SCOPE_ESCALATION", "UNAUTHORIZED_ACTION"
+        "TOKEN_MISMATCH", "SCOPE_ESCALATION"
     ])]
     if critical_flags and breakdown.resource_sensitivity in (
         ResourceSensitivity.HIGH, ResourceSensitivity.CRITICAL

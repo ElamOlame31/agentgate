@@ -931,13 +931,21 @@ async function refreshAgents() {
       const barCol   = barColor(score);
       const isCrit   = score < 40;
       const isSel    = selectedAgent === a.agent_id;
+      const depthBadge = a.delegation_depth > 0
+        ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);margin-left:4px;">D${a.delegation_depth}</span>`
+        : '';
+      const chainLine = a.delegation_depth > 0 && a.chain
+        ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.chain}">${a.chain}</div>`
+        : '';
       return `
         <div class="agent-card ${isCrit?'critical':''} ${isSel?'selected':''}"
              onclick="filterAgent('${a.agent_id}')">
           <div class="ac-top">
             <span class="ac-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
             <span class="ac-name" title="${a.name}">${a.agent_id}</span>
+            ${depthBadge}
           </div>
+          ${chainLine}
           <div class="ac-sub">${a.declared_purpose.slice(0,32)}…</div>
           <div class="ac-bar-wrap">
             <div class="ac-bar-track">
