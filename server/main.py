@@ -378,16 +378,15 @@ async def get_decision(decision_id: str):
     return a.to_dict()
 
 
-@app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_api_key)])
+@app.post("/decisions/{decision_id}/approve")
 async def approve_decision(decision_id: str):
     if not approvals.approve(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found or already resolved")
-    a = approvals.get_pending(decision_id)
     print(f"[AgentGate] Human APPROVED {decision_id}", flush=True)
     return {"status": "approved", "decision_id": decision_id}
 
 
-@app.post("/decisions/{decision_id}/deny", dependencies=[Depends(require_api_key)])
+@app.post("/decisions/{decision_id}/deny")
 async def deny_decision(decision_id: str):
     if not approvals.deny(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found or already resolved")

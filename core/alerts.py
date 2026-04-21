@@ -124,8 +124,8 @@ def fire_approval_request(request_id: str, agent_id: str, action: str,
     }
     if public_url:
         headers["Actions"] = (
-            f"http, Approve, {public_url}/decisions/{request_id}/approve, method=POST, clear=true; "
-            f"http, Deny, {public_url}/decisions/{request_id}/deny, method=POST, clear=true"
+            f"http, Approve, {public_url}/decisions/{request_id}/approve, method=POST, headers.ngrok-skip-browser-warning=true, clear=true; "
+            f"http, Deny, {public_url}/decisions/{request_id}/deny, method=POST, headers.ngrok-skip-browser-warning=true, clear=true"
         )
 
     try:
