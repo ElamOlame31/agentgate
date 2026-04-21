@@ -15,6 +15,7 @@ class Decision(str, Enum):
     PERMIT = "PERMIT"
     DENY = "DENY"
     ESCALATE = "ESCALATE"
+    PENDING = "PENDING"
 
 
 class AgentRegistration(BaseModel):
@@ -27,7 +28,8 @@ class AgentRegistration(BaseModel):
     delegation_depth: int = 0
     scope_at_delegation: Optional[List[str]] = None
     token: Optional[str] = None
-    processes_external_content: bool = False  # triggers content scanning on read
+    processes_external_content: bool = False
+    requires_human_approval: bool = False
 
 
 class AuthorizationRequest(BaseModel):

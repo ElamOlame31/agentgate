@@ -26,6 +26,7 @@ class AgentGateToolkit:
         authorized_actions: list[str],
         delegation_depth: int = 0,
         processes_external_content: bool = False,
+        requires_human_approval: bool = False,
         api_key: str = "",
     ):
         self.agentgate_url = agentgate_url.rstrip("/")
@@ -36,9 +37,11 @@ class AgentGateToolkit:
             agent_id, name, declared_purpose,
             authorized_resources, authorized_actions,
             delegation_depth, processes_external_content,
+            requires_human_approval,
         )
 
-    def _register(self, agent_id, name, purpose, resources, actions, depth, ext_content) -> str:
+    def _register(self, agent_id, name, purpose, resources, actions, depth,
+                  ext_content, requires_human_approval) -> str:
         r = httpx.post(
             f"{self.agentgate_url}/agents/register",
             headers=self._headers,
@@ -50,6 +53,7 @@ class AgentGateToolkit:
                 "authorized_actions": actions,
                 "delegation_depth": depth,
                 "processes_external_content": ext_content,
+                "requires_human_approval": requires_human_approval,
             },
             timeout=15.0,
         )

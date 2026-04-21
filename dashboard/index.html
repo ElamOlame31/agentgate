@@ -290,6 +290,71 @@ header {
 .chart-wrap { flex: 1; padding: 8px 12px 12px; }
 canvas#mainChart { width: 100%; height: 100%; display: block; }
 
+/* ── Pending Approvals Panel ──────────────────────────────────────────────── */
+#pending-panel {
+  display: none;
+  background: rgba(255,149,0,0.06);
+  border-bottom: 1px solid rgba(255,149,0,0.3);
+  flex-shrink: 0;
+  overflow-y: auto;
+  max-height: 220px;
+}
+.pending-head {
+  padding: 8px 16px;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,149,0,0.1);
+  border-bottom: 1px solid rgba(255,149,0,0.2);
+  font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--orange); font-weight: 700;
+  position: sticky; top: 0;
+}
+.pending-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--orange); box-shadow: 0 0 8px var(--orange);
+  animation: blinkAmber 0.8s infinite;
+}
+.pending-count {
+  margin-left: auto;
+  background: var(--orange); color: #000;
+  font-size: 9px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px;
+}
+.pending-item {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255,149,0,0.15);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px; align-items: center;
+  animation: rowIn 200ms ease-out;
+}
+.pending-item:hover { background: rgba(255,149,0,0.05); }
+.pending-info { min-width: 0; }
+.pending-agent { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--orange); }
+.pending-action {
+  font-family: var(--mono); font-size: 10px; color: var(--text2);
+  margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pending-reason { font-size: 10px; color: var(--text3); margin-top: 2px; font-style: italic; }
+.pending-timer {
+  font-family: var(--mono); font-size: 9px; color: var(--orange);
+  margin-top: 3px; opacity: 0.7;
+}
+.pending-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.btn-approve {
+  background: rgba(0,208,132,0.15); border: 1px solid rgba(0,208,132,0.4);
+  color: var(--green); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  padding: 5px 12px; border-radius: 4px; cursor: default; letter-spacing: 0.05em;
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+.btn-approve:hover { background: rgba(0,208,132,0.3); box-shadow: 0 0 10px rgba(0,208,132,0.3); }
+.btn-deny {
+  background: rgba(255,59,92,0.12); border: 1px solid rgba(255,59,92,0.35);
+  color: var(--red); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  padding: 5px 12px; border-radius: 4px; cursor: default; letter-spacing: 0.05em;
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+.btn-deny:hover { background: rgba(255,59,92,0.25); box-shadow: 0 0 10px rgba(255,59,92,0.25); }
+
 /* ── Bottom Panel ─────────────────────────────────────────────────────────── */
 .bottom-panel {
   border-top: 1px solid var(--border);
@@ -440,6 +505,15 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
           <span class="live-dot"></span>
           LIVE AUTHORIZATION FEED
         </div>
+        <!-- Pending Approvals -->
+        <div id="pending-panel">
+          <div class="pending-head">
+            <span class="pending-dot"></span>
+            PENDING HUMAN APPROVALS
+            <span class="pending-count" id="pending-count">0</span>
+          </div>
+          <div id="pending-list"></div>
+        </div>
         <div id="feed"></div>
       </div>
 
@@ -580,6 +654,109 @@ function addFeedItem(data) {
     <span class="req-path"><span class="action">${data.action.toUpperCase()}</span> ${data.resource}</span>
     <span class="score-badge ${scoreClass(score)}">${scoreLabel(score)} ${score}</span>
     <span class="req-reason" title="${reason}">${reason}</span>
+  `;
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
+// ── Pending Approvals ─────────────────────────────────────────────────────
+
+const _pendingItems = {};  // id → data
+
+function renderPendingPanel() {
+  const panel   = document.getElementById('pending-panel');
+  const list    = document.getElementById('pending-list');
+  const countEl = document.getElementById('pending-count');
+  const ids     = Object.keys(_pendingItems);
+  countEl.textContent = ids.length;
+
+  if (ids.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+
+  list.innerHTML = ids.map(id => {
+    const d = _pendingItems[id];
+    const expires = d.expires_at;
+    return `
+      <div class="pending-item" id="pi-${id}">
+        <div class="pending-info">
+          <div class="pending-agent">${d.agent_id}</div>
+          <div class="pending-action">${d.action.toUpperCase()} ${d.resource}</div>
+          <div class="pending-reason">${d.explanation}</div>
+          <div class="pending-timer" id="pt-${id}">Expires in …</div>
+        </div>
+        <div class="pending-btns">
+          <button class="btn-approve" onclick="resolveApproval('${id}','approve')">APPROVE</button>
+          <button class="btn-deny"    onclick="resolveApproval('${id}','deny')">DENY</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function startPendingTimer(id, expiresAt) {
+  const tick = () => {
+    const el = document.getElementById(`pt-${id}`);
+    if (!el || !_pendingItems[id]) return;
+    const left = Math.max(0, Math.round(expiresAt - Date.now() / 1000));
+    el.textContent = left > 0 ? `Auto-denies in ${left}s` : 'Expired — auto-denying…';
+    if (left > 0) setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+async function resolveApproval(id, action) {
+  const btn = document.querySelectorAll(`#pi-${id} button`);
+  btn.forEach(b => { b.disabled = true; b.style.opacity = '0.4'; });
+  try {
+    await fetch(`${API}/decisions/${id}/${action}`, { method: 'POST' });
+  } catch(e) {}
+}
+
+function addPending(data) {
+  _pendingItems[data.id] = data;
+  renderPendingPanel();
+  startPendingTimer(data.id, data.expires_at);
+  // Also add to feed as a PENDING row
+  const feed  = document.getElementById('feed');
+  const row   = document.createElement('div');
+  const ts    = new Date(data.created_at * 1000).toLocaleTimeString();
+  row.className = 'req-row';
+  row.style.background = 'rgba(255,149,0,0.06)';
+  row.style.borderLeft = '3px solid var(--orange)';
+  row.innerHTML = `
+    <span class="req-dot escalate"></span>
+    <span class="req-time">${ts}</span>
+    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
+    <span class="req-path"><span class="action" style="background:var(--orange);color:#000;padding:1px 5px;border-radius:3px;font-size:9px;">PENDING</span> ${data.action} ${data.resource}</span>
+    <span class="score-badge low">ESCALATE ${Math.round(data.trust_score)}</span>
+    <span class="req-reason">Awaiting human approval…</span>
+  `;
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
+function resolveApprovalUI(data) {
+  delete _pendingItems[data.id];
+  renderPendingPanel();
+  // Add resolved row to feed
+  const feed = document.getElementById('feed');
+  const row  = document.createElement('div');
+  const ts   = new Date((data.resolved_at || Date.now()/1000) * 1000).toLocaleTimeString();
+  const approved = data.status === 'APPROVED';
+  row.className = 'req-row' + (approved ? '' : ' blocked');
+  row.innerHTML = `
+    <span class="req-dot ${approved ? 'permit' : 'deny'}"></span>
+    <span class="req-time">${ts}</span>
+    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
+    <span class="req-path">
+      <span class="action" style="background:${approved ? 'var(--green)' : 'var(--red)'};color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;">
+        ${approved ? 'APPROVED' : 'DENIED'}
+      </span> ${data.action} ${data.resource}
+    </span>
+    <span class="score-badge ${approved ? 'high' : 'critical'}">${approved ? 'HUMAN ✓' : 'HUMAN ✗'}</span>
+    <span class="req-reason">Human ${approved ? 'approved' : 'denied'} this action</span>
   `;
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
@@ -927,17 +1104,37 @@ function connect() {
       refreshAgents();
     } else if (msg.type === 'injection') {
       addInjectionFeedItem(msg.data);
+    } else if (msg.type === 'pending') {
+      addPending(msg.data);
+    } else if (msg.type === 'approval_resolved') {
+      resolveApprovalUI(msg.data);
     }
   };
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
+async function refreshPending() {
+  try {
+    const r  = await fetch(`${API}/decisions/pending`);
+    const ps = await r.json();
+    ps.forEach(p => {
+      if (!_pendingItems[p.id]) {
+        _pendingItems[p.id] = p;
+        startPendingTimer(p.id, p.expires_at);
+      }
+    });
+    renderPendingPanel();
+  } catch(e) {}
+}
+
 document.getElementById('policy-input').addEventListener('keydown', e => { if(e.key==='Enter') addPolicy(); });
 connect();
 refreshAgents();
 refreshPolicies();
+refreshPending();
 setInterval(refreshAgents, 8000);
+setInterval(refreshPending, 5000);
 window.addEventListener('resize', drawChart);
 </script>
 </body>

@@ -101,6 +101,45 @@ def fire_alert(decision: str, agent_id: str, action: str, resource: str,
     thread.start()
 
 
+def fire_approval_request(request_id: str, agent_id: str, action: str,
+                          resource: str, explanation: str, score: float):
+    """Send an ntfy.sh notification with Approve/Deny action buttons."""
+    cfg = _get_config()
+    topic = cfg["topic"]
+    if not topic:
+        return
+
+    public_url = os.getenv("AGENTGATE_PUBLIC_URL", "").rstrip("/")
+    title = f"APPROVAL NEEDED: {agent_id}"
+    body = (
+        f"Action: {action} on {resource}\n"
+        f"Trust Score: {score}/100\n"
+        f"Reason: {explanation}\n"
+        f"Auto-denies in 90 seconds."
+    )
+    headers = {
+        "Title": title,
+        "Priority": "urgent",
+        "Tags": "question,shield",
+    }
+    if public_url:
+        headers["Actions"] = (
+            f"http, Approve, {public_url}/decisions/{request_id}/approve, method=POST, clear=true; "
+            f"http, Deny, {public_url}/decisions/{request_id}/deny, method=POST, clear=true"
+        )
+
+    try:
+        r = httpx.post(
+            f"{NTFY_BASE}/{topic}",
+            content=body.encode("utf-8"),
+            headers=headers,
+            timeout=10.0,
+        )
+        print(f"[AgentGate] Approval alert sent: {r.status_code}", flush=True)
+    except Exception as e:
+        print(f"[AgentGate] Approval alert error: {e}", flush=True)
+
+
 def alerts_configured() -> bool:
     return bool(_get_config()["topic"] or _get_config()["webhook"])
 

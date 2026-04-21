@@ -38,7 +38,8 @@ from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
     check_policies, Policy, init_policy_table
 )
-from core.alerts import fire_alert, alerts_configured, alert_status
+from core.alerts import fire_alert, fire_approval_request, alerts_configured, alert_status
+from core import approvals
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -70,17 +71,22 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def _ws_broadcast(data: dict):
+    await manager.broadcast(data)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     audit.init_db()
     init_policy_table()
     _agents.update(audit.load_all_agents())
+    approvals.set_broadcast_callback(_ws_broadcast)
     if _get_api_key():
         print("[AgentGate] Auth ON  — API key required on all endpoints")
     else:
         print("[AgentGate] Auth OFF — set AGENTGATE_API_KEY in .env to enable")
     if alerts_configured():
-        print(f"[AgentGate] Alerts ON → {alert_status()}")
+        print(f"[AgentGate] Alerts ON -> {alert_status()}")
     else:
         print("[AgentGate] Alerts OFF — set AGENTGATE_ALERT_TOPIC in .env to enable")
     yield
@@ -172,6 +178,35 @@ async def authorize(request: AuthorizationRequest):
         agent.name, request.action, request.resource,
         breakdown, decision, flags
     )
+
+    # ── Human-in-the-loop: pause ESCALATE for manual review ───────────────
+    if decision == Decision.ESCALATE and agent.requires_human_approval:
+        pending = approvals.create_pending(
+            request_id=request.request_id,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            explanation=explanation,
+            trust_score=breakdown.final_score,
+        )
+        await manager.broadcast({"type": "pending", "data": pending.to_dict()})
+        fire_approval_request(
+            request.request_id, request.agent_id,
+            request.action, request.resource,
+            explanation, breakdown.final_score,
+        )
+        response = AuthorizationResponse(
+            request_id=request.request_id,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            decision=Decision.PENDING,
+            trust_breakdown=breakdown,
+            explanation=f"[PENDING HUMAN APPROVAL] {explanation}",
+            attack_flags=flags,
+        )
+        audit.log_decision(response)
+        return response
 
     response = AuthorizationResponse(
         request_id=request.request_id,
@@ -326,6 +361,38 @@ async def remove_policy(policy_id: str):
         raise HTTPException(status_code=404, detail="Policy not found")
     await manager.broadcast({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]})
     return {"status": "deleted"}
+
+
+# ── Human Approval Endpoints ────────────────────────────────────────────────
+
+@app.get("/decisions/pending")
+async def list_pending():
+    return approvals.get_all_pending()
+
+
+@app.get("/decisions/{decision_id}")
+async def get_decision(decision_id: str):
+    a = approvals.get_pending(decision_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return a.to_dict()
+
+
+@app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_api_key)])
+async def approve_decision(decision_id: str):
+    if not approvals.approve(decision_id):
+        raise HTTPException(status_code=404, detail="Decision not found or already resolved")
+    a = approvals.get_pending(decision_id)
+    print(f"[AgentGate] Human APPROVED {decision_id}", flush=True)
+    return {"status": "approved", "decision_id": decision_id}
+
+
+@app.post("/decisions/{decision_id}/deny", dependencies=[Depends(require_api_key)])
+async def deny_decision(decision_id: str):
+    if not approvals.deny(decision_id):
+        raise HTTPException(status_code=404, detail="Decision not found or already resolved")
+    print(f"[AgentGate] Human DENIED {decision_id}", flush=True)
+    return {"status": "denied", "decision_id": decision_id}
 
 
 # ── Audit & Stats ───────────────────────────────────────────────────────────

@@ -149,6 +149,7 @@ def scenario_compromised():
         declared_purpose="Read and summarize quarterly business reports",
         authorized_resources=["/documents/*", "/confidential/*", "/system/*"],
         authorized_actions=["read", "write", "delete", "search"],
+        requires_human_approval=True,
         api_key=AGENTGATE_API_KEY,
     )
 

@@ -6,6 +6,7 @@ schema as the original, but intercepts the call before execution.
 This is the approach that works reliably with LangGraph's create_react_agent.
 """
 
+import time
 import uuid
 import httpx
 from langchain_core.tools import tool as lc_tool, BaseTool
@@ -52,6 +53,33 @@ def _authorize(agentgate_url: str, agent_id: str, token: str,
     )
     r.raise_for_status()
     return r.json()
+
+
+def _poll_decision(agentgate_url: str, request_id: str,
+                   headers: dict = {}, max_wait: int = 95) -> str:
+    """Poll /decisions/{id} until resolved or timeout. Returns 'APPROVED' or 'DENIED'."""
+    deadline = time.time() + max_wait
+    remaining = max_wait
+    print(f"[AgentGate] Waiting for human approval on {request_id}… ({max_wait}s timeout)")
+    while time.time() < deadline:
+        try:
+            r = httpx.get(
+                f"{agentgate_url}/decisions/{request_id}",
+                headers=headers,
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                status = data.get("status", "PENDING")
+                if status in ("APPROVED", "DENIED"):
+                    return status
+                expires_at = data.get("expires_at", 0)
+                remaining = max(0, int(expires_at - time.time()))
+                print(f"[AgentGate] Still pending… {remaining}s remaining", end="\r")
+        except Exception:
+            pass
+        time.sleep(2)
+    return "DENIED"
 
 
 def _scan_content(agentgate_url: str, agent_id: str, content: str,
@@ -116,6 +144,20 @@ class AgentGateToolWrapper:
                     f"Reason: {explanation}. "
                     f"Do not retry this request."
                 )
+
+            if decision == "PENDING":
+                request_id = result.get("request_id", "")
+                print(f"\n[AgentGate] ⏳ HUMAN APPROVAL REQUIRED for {action} on '{resource}'")
+                print(f"[AgentGate] Check your phone or dashboard to approve/deny.")
+                human_decision = _poll_decision(agentgate_url, request_id, headers)
+                print(f"\n[AgentGate] Human decision: {human_decision}")
+                if human_decision != "APPROVED":
+                    return (
+                        f"ACCESS DENIED by human reviewer via AgentGate.\n"
+                        f"Action: {action} on '{resource}'.\n"
+                        f"A human operator reviewed and denied this request.\n"
+                        f"Do not retry this request."
+                    )
 
             # Execute the real tool
             output = original_func(*args, **kwargs)
