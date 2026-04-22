@@ -6,8 +6,8 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, Query
+from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -39,6 +39,7 @@ from core.policy_engine import (
     check_policies, Policy, init_policy_table
 )
 from core.alerts import fire_alert, fire_approval_request, alerts_configured, alert_status
+from core.report import generate_pdf, generate_csv
 from core import approvals
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
 
@@ -79,6 +80,7 @@ async def _ws_broadcast(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     audit.init_db()
+    audit.cleanup_old_history(max_age_seconds=3600.0)
     init_policy_table()
     _agents.update(audit.load_all_agents())
     approvals.set_broadcast_callback(_ws_broadcast)
@@ -115,7 +117,7 @@ async def register_agent(reg: AgentRegistration):
     return {"agent_id": reg.agent_id, "token": reg.token, "status": "registered"}
 
 
-@app.get("/agents", response_model=list)
+@app.get("/agents", response_model=list, dependencies=[Depends(require_api_key)])
 async def list_agents():
     return _agent_list()
 
@@ -182,7 +184,7 @@ async def delegate_agent(req: DelegationRequest):
     }
 
 
-@app.delete("/agents/{agent_id}")
+@app.delete("/agents/{agent_id}", dependencies=[Depends(require_api_key)])
 async def deregister_agent(agent_id: str):
     if agent_id not in _agents:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -429,7 +431,7 @@ async def remove_policy(policy_id: str):
 
 # ── Human Approval Endpoints ────────────────────────────────────────────────
 
-@app.get("/decisions/pending")
+@app.get("/decisions/pending", dependencies=[Depends(require_api_key)])
 async def list_pending():
     return approvals.get_all_pending()
 
@@ -460,14 +462,64 @@ async def deny_decision(decision_id: str):
 
 # ── Audit & Stats ───────────────────────────────────────────────────────────
 
-@app.get("/audit/recent")
+@app.get("/audit/recent", dependencies=[Depends(require_api_key)])
 async def recent_audit(limit: int = 50):
     return audit.get_recent_decisions(limit)
+
+
+@app.get("/audit/agent/{agent_id}", dependencies=[Depends(require_api_key)])
+async def agent_audit(agent_id: str, limit: int = 100):
+    return audit.get_agent_decisions(agent_id, limit)
 
 
 @app.get("/audit/stats")
 async def stats():
     return audit.get_stats()
+
+
+@app.get("/audit/export", dependencies=[Depends(require_api_key)])
+async def export_audit(
+    format: str = Query("pdf", regex="^(pdf|csv)$"),
+    from_ts: float = Query(None, description="Start Unix timestamp (default: 30 days ago)"),
+    to_ts:   float = Query(None, description="End Unix timestamp (default: now)"),
+):
+    import time as _time
+    now   = _time.time()
+    to_ts   = to_ts   or now
+    from_ts = from_ts or (now - 30 * 86400)
+
+    rows  = audit.get_decisions_in_range(from_ts, to_ts)
+    stats = audit.get_stats()
+
+    if format == "csv":
+        csv_data = generate_csv(rows)
+        filename = f"agentgate_audit_{int(from_ts)}_{int(to_ts)}.csv"
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    pdf_bytes = generate_pdf(rows, stats, from_ts, to_ts)
+    filename  = f"agentgate_audit_{int(from_ts)}_{int(to_ts)}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/audit/baselines", dependencies=[Depends(require_api_key)])
+async def all_baselines():
+    return audit.get_all_baselines()
+
+
+@app.get("/audit/baselines/{agent_id}", dependencies=[Depends(require_api_key)])
+async def agent_baseline(agent_id: str):
+    b = audit.get_agent_baseline(agent_id)
+    if b is None:
+        raise HTTPException(status_code=404, detail="No baseline data for this agent yet")
+    return b
 
 
 # ── WebSocket ───────────────────────────────────────────────────────────────

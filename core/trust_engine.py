@@ -21,8 +21,12 @@ W_DELEGATION = 0.25
 W_PURPOSE = 0.30
 W_BEHAVIORAL = 0.20
 
-# Velocity: max requests per minute before behavioral score degrades
-MAX_RPM = 20
+# Velocity: global fallback threshold for agents with no baseline yet
+GLOBAL_MAX_RPM = 20
+# Minimum requests before we trust the baseline over the global threshold
+BASELINE_MIN_REQUESTS = 10
+# How many standard deviations above baseline before we flag HIGH_VELOCITY
+BASELINE_SPIKE_MULTIPLIER = 2.5
 
 
 def classify_resource_sensitivity(resource: str) -> ResourceSensitivity:
@@ -124,14 +128,35 @@ def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
     history = audit.get_agent_request_history(agent_id, window_seconds=60.0)
     rpm = len(history)
 
-    if rpm > MAX_RPM:
-        excess = rpm - MAX_RPM
-        penalty = min(90.0, excess * 5.0)
-        score -= penalty
-        if rpm > MAX_RPM * 2:
-            flags.append(f"CRITICAL_VELOCITY:{rpm}_RPM")
-        else:
-            flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
+    # Use per-agent baseline if the agent has enough history; fall back to global threshold
+    baseline = audit.get_agent_baseline(agent_id)
+    if baseline and baseline["total_requests"] >= BASELINE_MIN_REQUESTS:
+        agent_avg_rpm = baseline["avg_rpm"]
+        # Effective ceiling: agent's own average * spike multiplier, floor at GLOBAL_MAX_RPM
+        effective_max = max(GLOBAL_MAX_RPM, agent_avg_rpm * BASELINE_SPIKE_MULTIPLIER)
+        anomaly_ratio = rpm / max(agent_avg_rpm, 0.1)
+
+        if rpm > effective_max:
+            excess_ratio = rpm / effective_max
+            penalty = min(90.0, (excess_ratio - 1.0) * 45.0)
+            score -= penalty
+            if anomaly_ratio > 5.0:
+                flags.append(f"CRITICAL_VELOCITY:{rpm}_RPM|BASELINE:{round(agent_avg_rpm,1)}")
+            else:
+                flags.append(f"HIGH_VELOCITY:{rpm}_RPM|BASELINE:{round(agent_avg_rpm,1)}")
+    else:
+        # Cold start: use global threshold
+        if rpm > GLOBAL_MAX_RPM:
+            excess = rpm - GLOBAL_MAX_RPM
+            penalty = min(90.0, excess * 5.0)
+            score -= penalty
+            if rpm > GLOBAL_MAX_RPM * 2:
+                flags.append(f"CRITICAL_VELOCITY:{rpm}_RPM")
+            else:
+                flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
+
+    # Update the baseline with current RPM observation
+    audit.update_agent_baseline(agent_id, float(rpm))
 
     # Check for repeated identical actions (replay-style behavior)
     recent_actions = [h["action"] for h in history[:10]]

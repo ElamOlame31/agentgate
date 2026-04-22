@@ -3,16 +3,16 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentgate"
-version = "0.1.0"
+name = "agentgate-pdp"
+version = "0.2.0"
 description = "Context-aware trust authorization for agentic AI systems"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "AgentGate", email = "olame109@gmail.com" }
 ]
-keywords = ["ai", "agents", "security", "authorization", "llm", "langchain"]
+keywords = ["ai", "agents", "security", "authorization", "llm", "langchain", "policy", "trust", "pdp", "agentic"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

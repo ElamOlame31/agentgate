@@ -26,7 +26,7 @@
 \rhead{\textcolor{accentblue}{\textbf{AgentGate}} — 14-Day Build Sprint}
 \lhead{ELG5901 | University of Ottawa}
 \rfoot{Page \thepage}
-\lfoot{Last updated: April 20, 2026 (Day 5)}
+\lfoot{Last updated: April 21, 2026 (Day 7)}
 
 % Section formatting
 \titleformat{\section}{\large\bfseries\color{accentblue}}{}{0em}{}[\titlerule]
@@ -677,6 +677,223 @@ AgentGate enforces both.
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
+\section{Days 6--7 — April 20--21, 2026}
+
+\subsection{Overview}
+
+Two major features shipped in this two-day window:
+\textbf{(1) Human-in-the-loop (HITL) approval} — pause an agent and require a
+human decision before execution continues; and
+\textbf{(2) Multi-agent orchestration security} — a full delegation chain
+enforcement system that prevents child agents from exceeding the scope their
+parent granted them.
+
+These two features together address the most dangerous real-world failure mode
+of agentic AI: a chain of AI agents, each making autonomous decisions, with
+no human check and no enforcement of what each agent is allowed to do.
+
+\subsection{Feature 1 — Human-in-the-Loop (HITL) Approval}
+
+\textbf{Problem:} The ESCALATE decision was already implemented — it flags
+borderline requests — but up to this point it was purely informational.
+The agent received ``ESCALATE'' and continued executing anyway (or the wrapper
+denied it uniformly). Neither option was right: an agent that ignores escalations
+defeats the purpose, and auto-deny loses legitimate high-sensitivity operations.
+
+\textbf{Solution:} When an agent is registered with
+\texttt{requires\_human\_approval=True} and its request results in ESCALATE,
+the authorization flow returns \texttt{PENDING} instead of a final decision.
+The agent wrapper blocks and polls. A human approves or denies via the
+dashboard or ntfy.sh phone notification. The agent continues or stops based
+on that decision. If no human acts within 90 seconds, the system auto-denies.
+
+\textbf{Architecture:}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{core/approvals.py} (new) — in-memory pending decisions store.
+    Each \texttt{PendingApproval} object holds a \texttt{threading.Event}
+    that blocks until resolved. A daemon timer fires auto-deny after 90 seconds.
+  \item \textbf{core/models.py} — added \texttt{Decision.PENDING} to the
+    decision enum and \texttt{requires\_human\_approval: bool} to agent registration.
+  \item \textbf{server/main.py} — HITL branch in the authorize endpoint:
+    if \texttt{decision == ESCALATE} and \texttt{requires\_human\_approval}, the
+    server creates a pending record, fires the ntfy.sh notification with
+    action buttons, and returns \texttt{PENDING} with a \texttt{request\_id}.
+    New endpoints: \texttt{POST /decisions/\{id\}/approve},
+    \texttt{POST /decisions/\{id\}/deny}, \texttt{GET /decisions/\{id\}},
+    \texttt{GET /decisions/pending}. Approve/deny require no API key —
+    the UUID itself is the one-time token, valid for 90 seconds.
+  \item \textbf{integrations/langchain\_agentgate/wrapper.py} — added
+    \texttt{\_poll\_decision()} which polls \texttt{/decisions/\{id\}} every
+    2 seconds for up to 95 seconds. While the human decides, the agent is
+    suspended. On \texttt{APPROVED}, execution resumes. On \texttt{DENIED}
+    or timeout, the wrapper returns an access-denied message.
+  \item \textbf{Dashboard} — live pending approval panel with a countdown
+    timer and Approve/Deny buttons. Resolving from the dashboard triggers
+    WebSocket broadcast to update all connected tabs instantly.
+\end{itemize}
+
+\textbf{Flow diagram:}
+
+\begin{verbatim}
+Agent calls tool
+  → wrapper calls /authorize
+    → decision = ESCALATE + requires_human_approval = True
+      → server creates PendingApproval (90s timer)
+      → fires ntfy.sh notification with [Approve] [Deny] buttons
+      → returns {"decision": "PENDING", "request_id": "<uuid>"}
+  → wrapper polls /decisions/<uuid> every 2s
+    Human clicks Approve on dashboard (or phone)
+      → POST /decisions/<uuid>/approve
+      → PendingApproval resolves to APPROVED
+  → wrapper receives APPROVED → tool executes
+    Human clicks Deny (or 90s expires)
+      → wrapper receives DENIED → returns "ACCESS DENIED by human reviewer"
+\end{verbatim}
+
+\subsection{Feature 2 — Multi-Agent Orchestration Security}
+
+\textbf{Problem:} Modern AI workflows chain multiple agents together.
+Agent A (orchestrator) delegates to Agent B (analyst) which delegates to
+Agent C (summarizer). Each agent has its own scope. The danger: a compromised
+or misconfigured child agent attempts to access resources beyond what its
+parent authorized — a privilege escalation attack through the delegation chain.
+No existing system validates the full chain at authorization time.
+
+\textbf{Solution:} AgentGate enforces \textit{scope attenuation} across the
+entire delegation chain. A child agent's authorized resources and actions must
+be a strict subset of its parent's. This is validated both at delegation time
+(registration) and at authorization time (every request). A child can only do
+what every ancestor in the chain is allowed to do.
+
+\textbf{Core principle — scope attenuation:}
+
+\begin{verbatim}
+Parent scope:  /documents/*  (read, search)
+Child scope:   /documents/public/*  (read)     ← VALID (subset)
+Child scope:   /confidential/*  (read)          ← BLOCKED (not in parent)
+Child scope:   /documents/*  (read, delete)     ← BLOCKED (delete not in parent)
+\end{verbatim}
+
+\textbf{Architecture:}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{core/delegation.py} (new) — three enforcement functions:
+    \begin{itemize}[noitemsep]
+      \item \texttt{validate\_delegation()} — called at registration time.
+        Verifies child resources and actions are subsets of parent's.
+        Returns \texttt{(ok: bool, error: str)}.
+      \item \texttt{check\_chain\_scope()} — called at authorization time.
+        Walks all ancestors via \texttt{delegated\_by} pointers.
+        Verifies the requested action+resource is within \textit{every}
+        ancestor's scope. Fails fast on first violation.
+      \item \texttt{compute\_chain\_trust\_multiplier()} — applies a 10\% trust
+        penalty per delegation level, floored at 50\%.
+        A depth-3 chain scores at 70\% of a direct registration's trust.
+      \item \texttt{chain\_summary()} — returns a human-readable chain string
+        (e.g., ``orchestrator $\to$ analyst $\to$ summarizer'') for the dashboard.
+    \end{itemize}
+  \item \textbf{server/main.py} — new \texttt{POST /agents/delegate} endpoint.
+    Validates parent exists, depth does not exceed \texttt{MAX\_DELEGATION\_DEPTH=3},
+    and child scope is within parent scope. On violation, returns HTTP 400
+    with a detailed error message. No agent is created.
+  \item \textbf{core/trust\_engine.py} — \texttt{score\_delegation()} now
+    walks the full chain at authorization time. \texttt{CHAIN\_SCOPE\_VIOLATION}
+    sets the delegation score to 0 and triggers a hard deny in
+    \texttt{make\_decision()}, regardless of other scores.
+    Other hard-deny flags added: \texttt{UNAUTHORIZED\_ACTION},
+    \texttt{RESOURCE\_OUT\_OF\_SCOPE}.
+  \item \textbf{core/audit.py} — schema migration: added
+    \texttt{scope\_at\_delegation}, \texttt{requires\_human\_approval},
+    \texttt{processes\_external\_content} columns to the agents table.
+    Migration is additive and idempotent — existing deployments upgrade
+    automatically on server start.
+\end{itemize}
+
+\textbf{demo\_multiagent.py — 3 scenarios, 9 checks:}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Scenario 1 — Legitimate chain:} Orchestrator $\to$ Analyst
+    $\to$ Summarizer. All requests within scope. All 3 checks: PERMIT.
+  \item \textbf{Scenario 2 — Compromised child agent:} Summarizer (depth 2,
+    only \texttt{/documents/public/*}) attempts \texttt{/confidential/},
+    \texttt{/documents/internal/}. Analyst attempts \texttt{delete} (not in
+    its actions). All 3 checks: DENY with \texttt{CHAIN\_SCOPE\_VIOLATION}
+    or \texttt{UNAUTHORIZED\_ACTION}.
+  \item \textbf{Scenario 3 — Privilege escalation at delegation:} Analyst
+    tries to register a child with \texttt{/confidential/*} scope (outside
+    analyst's own scope). Blocked at registration time — HTTP 400,
+    no agent created.
+\end{itemize}
+
+Result: \textbf{9/9 checks pass}.
+
+\subsection{Feature 3 — Dashboard Scenario Selector and Live Delegation Tree}
+
+The dashboard was updated to support both demo scenarios without switching windows.
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Scenario bar} — three filter buttons at the top: ALL, Demo 1
+    (LangChain), Demo 2 (Multi-Agent). Clicking a scenario filters the live
+    feed and the agent panel to show only events from that demo.
+  \item \textbf{Delegation tree panel} — replaces the bar chart in Demo 2 view.
+    Renders a visual tree of registered agents, showing parent $\to$ child
+    relationships with depth indicators. Each node shows the agent's trust
+    score from its last request.
+  \item \textbf{Chain violation flash} — when a \texttt{CHAIN\_SCOPE\_VIOLATION}
+    decision arrives via WebSocket, the attacking node in the tree pulses red
+    for 2 seconds. Visual real-time enforcement confirmation.
+  \item \textbf{Pending approvals panel} — shows open HITL requests with a
+    live countdown timer. One-click Approve/Deny from the browser.
+    Calls \texttt{/decisions/\{id\}/approve} or \texttt{deny} and
+    refreshes via WebSocket broadcast.
+\end{itemize}
+
+\subsection{What Works}
+
+\begin{itemize}[noitemsep]
+  \item HITL approval: PENDING decision pauses LangChain agent, human approves
+    from dashboard, agent resumes and executes the tool
+  \item 90-second auto-deny fires correctly when no human acts
+  \item Delegation chain validation blocks scope escalation at registration time
+    (HTTP 400, no agent created)
+  \item Chain scope violation hard-denies at authorization time regardless of
+    other trust scores
+  \item demo\_multiagent.py: 9/9 scenarios pass with correct PERMIT/DENY
+  \item Trust decay: depth-2 agent starts at 70\% trust multiplier before
+    other scoring — visible in audit log scores
+  \item Dashboard scenario tabs filter feed and swap chart $\leftrightarrow$ tree view
+  \item Delegation tree renders live from WebSocket agent updates
+  \item Chain violation flash highlights attacking node in real time
+\end{itemize}
+
+\subsection{What Does Not Work Yet}
+
+\begin{itemize}[noitemsep]
+  \item ntfy.sh action buttons (phone approve/deny) require ngrok or a public
+    HTTPS URL — not set up for demo; dashboard approval is used instead
+  \item Delegation tree does not yet persist tree layout between page refreshes
+    (agents re-register on each demo run, so this is acceptable for now)
+  \item \texttt{MAX\_DELEGATION\_DEPTH=3} is enforced but not yet configurable
+    per organization — hardcoded constant
+\end{itemize}
+
+\subsection{Key Numbers from Days 6--7}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{9/9} multi-agent attack scenarios correctly DENIED or PERMITTED
+  \item \textbf{90s} human approval timeout — auto-deny if no action
+  \item \textbf{3} max delegation depth enforced (configurable constant)
+  \item \textbf{10\%} trust penalty per delegation level, minimum 50\% floor
+  \item \textbf{4} new API endpoints for HITL workflow
+    (\texttt{/agents/delegate}, \texttt{/decisions/\{id\}},
+    \texttt{/approve}, \texttt{/deny})
+  \item \textbf{2} new files: \texttt{core/approvals.py},
+    \texttt{core/delegation.py}
+  \item \textbf{0} false positives — legitimate multi-agent chains fully PERMIT
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{90-Day Roadmap — The Real Project (Starting May 1, 2026)}
 
 The 14-day sprint (April 16 -- May 1) is a head start built independently
@@ -697,6 +914,9 @@ Items originally planned for Phase 1 that were completed during the sprint:
   \item \textcolor{permitgreen}{\textbf{Done}} — \texttt{pip install agentgate} works locally (PyPI publish is Phase 1)
   \item \textcolor{permitgreen}{\textbf{Done}} — Prompt injection detection (moved up from Phase 3 — hybrid risk-gated model)
   \item \textcolor{permitgreen}{\textbf{Done}} — Docker containerization (\texttt{docker compose up})
+  \item \textcolor{permitgreen}{\textbf{Done}} — Human-in-the-loop approval (moved up from Phase 3 — 90s timeout, dashboard + phone)
+  \item \textcolor{permitgreen}{\textbf{Done}} — Multi-agent delegation chain enforcement (moved up from Phase 1 — 9/9 attack scenarios)
+  \item \textcolor{permitgreen}{\textbf{Done}} — Dashboard scenario selector + live delegation tree with chain violation flash
 \end{itemize}
 
 \subsection{Phase 1 — Hardening (May 1 -- May 30)}
@@ -704,7 +924,7 @@ Items originally planned for Phase 1 that were completed during the sprint:
 \begin{itemize}[noitemsep]
   \item \textbf{Publish to PyPI} — \texttt{pip install agentgate} works for anyone in the world, not just locally
   \item \textbf{Real file system integration} — replace hardcoded demo files with actual document reads. AgentGate protects real PDFs, databases, APIs.
-  \item \textbf{Multi-agent workflows} — test on chains of agents (LangChain, AutoGen, CrewAI) where Agent A delegates to Agent B delegates to Agent C. Verify delegation enforcement at scale.
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Multi-agent delegation enforcement: scope attenuation across full chain, 9/9 attack scenarios blocked. Remaining: scale testing on AutoGen/CrewAI.
   \item \textbf{Option 2 — Per-request source trust} — today the injection scanner treats all content the same. Option 2 adds a \texttt{source\_trust\_level} field per request: content from a verified internal system is scored differently than content from an anonymous email. Low-trust sources trigger stricter scanning thresholds automatically.
   \item \textbf{Async injection scan} — move the \texttt{/scan} call to a background thread to eliminate the extra round-trip latency on read operations.
 \end{itemize}
@@ -724,7 +944,7 @@ Items originally planned for Phase 1 that were completed during the sprint:
 \begin{itemize}[noitemsep]
   \item \textbf{AgentGate Cloud} — hosted version. Developer signs up, gets an API endpoint, connects their agent in 3 lines. No self-hosting required.
   \item \textbf{Native integrations} — official plugins for LangChain, AutoGen, CrewAI, and the Anthropic Agent SDK. AgentGate becomes the default security layer for the most popular agent frameworks.
-  \item \textbf{Human-in-the-loop approval} — for ESCALATE decisions, pause the agent and send a real-time approval request to a human. Agent waits. Human approves or denies. Agent continues or stops. Full human oversight on borderline decisions.
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Human-in-the-loop approval: PENDING state, 90s auto-deny, dashboard panel, LangChain wrapper polling. Remaining: ngrok/public URL for phone button flow.
   \item \textbf{Injection scan v2 (Option 2)} — per-request source trust scoring: content from verified internal systems vs.\ anonymous external sources triggers different scanning thresholds. A vendor email is scanned at 0.5 threshold; an internal system report at 0.75.
 \end{itemize}
 
@@ -745,6 +965,6 @@ proves the architecture works. The 90-day roadmap turns it into a product.
 \vspace{0.3cm}
 {\small \textit{This document is updated daily throughout the 14-day sprint.
 It serves as both a personal reference and the foundation for the academic report.
-Last update: April 20, 2026.}}
+Last update: April 21, 2026.}}
 
 \end{document}

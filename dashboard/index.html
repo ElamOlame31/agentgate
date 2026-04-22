@@ -515,6 +515,10 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
   </div>
   <div class="h-center">TRUST AUTHORIZATION LAYER &nbsp;·&nbsp; v0.2 &nbsp;·&nbsp; POLICY DECISION POINT</div>
   <div class="h-right">
+    <div style="display:flex;gap:6px;">
+      <button onclick="exportReport('pdf')" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 10px;background:rgba(0,212,255,.08);border:1px solid var(--cyan);color:var(--cyan);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Download PDF compliance report">⬇ PDF</button>
+      <button onclick="exportReport('csv')" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 10px;background:rgba(0,212,255,.05);border:1px solid var(--border-h);color:var(--text2);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Download CSV audit log">⬇ CSV</button>
+    </div>
     <span class="h-clock" id="clock">--:--:--</span>
     <span class="h-status" id="sys-status">SYSTEM NOMINAL</span>
   </div>
@@ -671,12 +675,21 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 const WS_URL = `ws://${location.host}/ws`;
 const API    = `http://${location.host}`;
 
+// API key — loaded from localStorage, settable via ?key=... URL param
+(function() {
+  const param = new URLSearchParams(location.search).get('key');
+  if (param) { localStorage.setItem('agentgate_key', param); }
+})();
+function getApiKey() { return localStorage.getItem('agentgate_key') || ''; }
+const API_HEADERS = { 'X-API-Key': getApiKey() };
+
 let ws;
 let scoreHistory   = [];
 let timelineEvents = [];
 let selectedAgent  = null;
 let currentScenario = 'all';
 let _allAgents = [];
+let _baselines = {};   // agent_id -> baseline object
 const MAX_FEED   = 100;
 const MAX_CHART  = 60;
 const MAX_TL     = 20;
@@ -852,7 +865,7 @@ async function resolveApproval(id, action) {
   const btn = document.querySelectorAll(`#pi-${id} button`);
   btn.forEach(b => { b.disabled = true; b.style.opacity = '0.4'; });
   try {
-    await fetch(`${API}/decisions/${id}/${action}`, { method: 'POST' });
+    await fetch(`${API}/decisions/${id}/${action}`, { method: 'POST', headers: API_HEADERS });
   } catch(e) {}
 }
 
@@ -1083,6 +1096,15 @@ function renderAgentPanel(agents) {
     const chainLine = a.delegation_depth > 0 && a.chain
       ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.chain}">${a.chain}</div>`
       : '';
+    const bl = _baselines[a.agent_id];
+    const baselineLine = bl && bl.total_requests >= 10
+      ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:2px;">
+           baseline <span style="color:var(--cyan)">${bl.avg_rpm.toFixed(1)} rpm</span>
+           · <span style="color:var(--text2)">${bl.total_requests} reqs</span>
+         </div>`
+      : (bl && bl.total_requests > 0
+          ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:2px;">learning… ${bl.total_requests}/10</div>`
+          : '');
     return `
       <div class="agent-card ${isCrit?'critical':''} ${isSel?'selected':''}"
            onclick="filterAgent('${a.agent_id}')">
@@ -1099,14 +1121,27 @@ function renderAgentPanel(agents) {
           </div>
           <span class="ac-bar-val">${score}</span>
         </div>
+        ${baselineLine}
       </div>`;
   }).join('');
 }
 
+async function refreshBaselines() {
+  try {
+    const r = await fetch(`${API}/audit/baselines`, { headers: API_HEADERS });
+    if (r.ok) {
+      const arr = await r.json();
+      _baselines = {};
+      arr.forEach(b => { _baselines[b.agent_id] = b; });
+    }
+  } catch(e) {}
+}
+
 async function refreshAgents() {
   try {
-    const r = await fetch(`${API}/agents`);
+    const r = await fetch(`${API}/agents`, { headers: API_HEADERS });
     _allAgents = await r.json();
+    await refreshBaselines();
     renderAgentPanel(_allAgents);
     if (currentScenario === 'demo2') renderDelegationTree(_allAgents);
   } catch(e) {}
@@ -1196,7 +1231,7 @@ async function addPolicy() {
   try {
     await fetch(`${API}/policies`, {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type':'application/json', ...API_HEADERS},
       body: JSON.stringify({rule})
     });
     input.placeholder = 'type a rule in plain English…';
@@ -1205,7 +1240,7 @@ async function addPolicy() {
 }
 
 async function deletePolicy(id) {
-  await fetch(`${API}/policies/${id}`, {method:'DELETE'});
+  await fetch(`${API}/policies/${id}`, {method:'DELETE', headers: API_HEADERS});
   refreshPolicies();
 }
 
@@ -1223,15 +1258,20 @@ function renderPolicies(ps) {
     el.innerHTML = '<div style="font-size:10px;color:var(--text3);">No active policies.</div>';
     return;
   }
-  el.innerHTML = ps.map(p => `
+  el.innerHTML = ps.map(p => {
+    const timeTag = p.time_start && p.time_end
+      ? `<span style="font-family:var(--mono);font-size:8px;padding:1px 4px;border-radius:2px;background:rgba(0,212,255,.1);color:var(--cyan);margin-left:4px;" title="Active ${p.time_invert?'outside':'within'} ${p.time_start}–${p.time_end} UTC">⏱ ${p.time_invert?'⌀':''}${p.time_start}–${p.time_end}</span>`
+      : '';
+    return `
     <div class="policy-item">
       <span class="pi-effect ${p.effect}">${p.effect}</span>
       <div class="pi-body">
-        <div class="pi-rule">${p.action_pattern} · ${p.resource_pattern}</div>
+        <div class="pi-rule">${p.action_pattern} · ${p.resource_pattern}${timeTag}</div>
         <div class="pi-desc" title="${p.description}">${p.description}</div>
       </div>
       <button class="pi-del" onclick="deletePolicy('${p.id}')">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────
@@ -1247,7 +1287,7 @@ async function openModal(filter) {
   overlay.classList.add('open');
 
   try {
-    const r    = await fetch(`${API}/audit/recent?limit=200`);
+    const r    = await fetch(`${API}/audit/recent?limit=200`, { headers: API_HEADERS });
     const rows = await r.json();
     let filtered = rows;
     if (filter==='PERMIT') filtered = rows.filter(r=>r.decision==='PERMIT');
@@ -1354,7 +1394,7 @@ function connect() {
 
 async function refreshPending() {
   try {
-    const r  = await fetch(`${API}/decisions/pending`);
+    const r  = await fetch(`${API}/decisions/pending`, { headers: API_HEADERS });
     const ps = await r.json();
     ps.forEach(p => {
       if (!_pendingItems[p.id]) {
@@ -1364,6 +1404,36 @@ async function refreshPending() {
     });
     renderPendingPanel();
   } catch(e) {}
+}
+
+// ── Compliance Export ─────────────────────────────────────────────────────
+
+async function exportReport(format) {
+  const btn = [...document.querySelectorAll('button')].find(b => b.textContent.includes(format.toUpperCase()));
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = '…'; btn.disabled = true; }
+
+  try {
+    const url = `${API}/audit/export?format=${format}&key=${encodeURIComponent(getApiKey())}`;
+    // Use window.location to trigger browser download
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `agentgate_report.${format}`;
+    // Must attach headers via fetch + blob since browser navigation can't set headers
+    const r = await fetch(url, { headers: API_HEADERS });
+    if (!r.ok) { alert('Export failed: ' + r.status); return; }
+    const blob = await r.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    a.href = objectUrl;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objectUrl);
+  } catch(e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = orig; btn.disabled = false; }
+  }
 }
 
 document.getElementById('policy-input').addEventListener('keydown', e => { if(e.key==='Enter') addPolicy(); });

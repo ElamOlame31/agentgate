@@ -19,3 +19,12 @@ class AgentGateEscalated(Exception):
 class AgentGateNotRegistered(Exception):
     """Raised when .authorize() is called before .register()."""
     pass
+
+
+class AgentGatePending(Exception):
+    """Raised when PENDING and auto_resolve_pending=False — caller must poll manually."""
+    def __init__(self, request_id: str, action: str, resource: str):
+        self.request_id = request_id
+        self.action = action
+        self.resource = resource
+        super().__init__(f"AgentGate PENDING human approval for {action} on {resource} (id={request_id})")

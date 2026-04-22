@@ -64,6 +64,17 @@ def init_db():
             timestamp REAL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_baselines (
+            agent_id TEXT PRIMARY KEY,
+            total_requests INTEGER DEFAULT 0,
+            avg_rpm REAL DEFAULT 0.0,
+            peak_rpm REAL DEFAULT 0.0,
+            last_updated REAL DEFAULT 0.0,
+            window_start REAL DEFAULT 0.0,
+            window_count INTEGER DEFAULT 0
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -101,6 +112,28 @@ def get_recent_decisions(limit: int = 50) -> list[dict]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_decisions_in_range(from_ts: float, to_ts: float) -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM audit_log WHERE timestamp>=? AND timestamp<=? ORDER BY timestamp DESC",
+        (from_ts, to_ts)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_agent_decisions(agent_id: str, limit: int = 100) -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM audit_log WHERE agent_id=? ORDER BY timestamp DESC LIMIT ?",
+        (agent_id, limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -162,6 +195,83 @@ def load_all_agents() -> dict[str, AgentRegistration]:
 def delete_agent(agent_id: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM agents WHERE agent_id=?", (agent_id,))
+    conn.commit()
+    conn.close()
+
+
+def _ensure_baseline_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_baselines (
+            agent_id TEXT PRIMARY KEY,
+            total_requests INTEGER DEFAULT 0,
+            avg_rpm REAL DEFAULT 0.0,
+            peak_rpm REAL DEFAULT 0.0,
+            last_updated REAL DEFAULT 0.0,
+            window_start REAL DEFAULT 0.0,
+            window_count INTEGER DEFAULT 0
+        )
+    """)
+
+
+def update_agent_baseline(agent_id: str, current_rpm: float):
+    """
+    Exponential moving average of RPM per agent.
+    alpha=0.1 means the baseline updates slowly — 10 requests in before it shifts significantly.
+    This intentionally makes sudden spikes stand out against a stable baseline.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_baseline_table(conn)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM agent_baselines WHERE agent_id=?", (agent_id,)
+    ).fetchone()
+
+    now = time.time()
+    if row is None:
+        conn.execute(
+            "INSERT INTO agent_baselines VALUES (?,?,?,?,?,?,?)",
+            (agent_id, 1, current_rpm, current_rpm, now, now, 1)
+        )
+    else:
+        alpha = 0.15
+        new_avg = alpha * current_rpm + (1 - alpha) * row["avg_rpm"]
+        new_peak = max(row["peak_rpm"], current_rpm)
+        new_total = row["total_requests"] + 1
+        conn.execute(
+            """UPDATE agent_baselines SET
+               total_requests=?, avg_rpm=?, peak_rpm=?, last_updated=?
+               WHERE agent_id=?""",
+            (new_total, round(new_avg, 3), round(new_peak, 3), now, agent_id)
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_agent_baseline(agent_id: str) -> dict | None:
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_baseline_table(conn)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM agent_baselines WHERE agent_id=?", (agent_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_baselines() -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_baseline_table(conn)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM agent_baselines").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def cleanup_old_history(max_age_seconds: float = 3600.0):
+    """Prune request_history older than max_age_seconds to prevent unbounded growth."""
+    conn = sqlite3.connect(DB_PATH)
+    cutoff = time.time() - max_age_seconds
+    conn.execute("DELETE FROM request_history WHERE timestamp<?", (cutoff,))
     conn.commit()
     conn.close()
 
