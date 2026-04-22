@@ -163,8 +163,81 @@ header {
 .pi-del  { background: none; border: none; color: var(--text3); font-size: 14px; cursor: default; padding: 0; line-height: 1; flex-shrink: 0; }
 .pi-del:hover { color: var(--red); }
 
+/* ── Scenario Selector ────────────────────────────────────────────────────── */
+.scenario-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 16px;
+  background: var(--s1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sc-btn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 14px; height: 100%; border: none; border-bottom: 2px solid transparent;
+  background: none; color: var(--text3);
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
+  cursor: default; letter-spacing: 0.05em;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+.sc-btn:hover { color: var(--text2); }
+.sc-btn.active-all    { color: var(--cyan);   border-bottom-color: var(--cyan); }
+.sc-btn.active-demo1  { color: var(--green);  border-bottom-color: var(--green); }
+.sc-btn.active-demo2  { color: var(--orange); border-bottom-color: var(--orange); }
+.sc-num {
+  font-family: var(--mono); font-size: 9px;
+  padding: 1px 5px; border-radius: 2px;
+  background: var(--s2);
+}
+.sc-active-num-all   { background: var(--cyan-dim);          color: var(--cyan); }
+.sc-active-num-demo1 { background: rgba(0,208,132,0.1);      color: var(--green); }
+.sc-active-num-demo2 { background: rgba(255,149,0,0.12);     color: var(--orange); }
+.sc-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.sc-desc {
+  margin-left: auto; font-size: 10px; color: var(--text3); font-style: italic;
+}
+
+/* ── Delegation Tree ──────────────────────────────────────────────────────── */
+.tree-panel { display: none; flex-direction: column; overflow: hidden; background: var(--s1); }
+.tree-panel.visible { display: flex; }
+#delegation-tree { overflow-y: auto; flex: 1; padding: 12px; }
+.tree-node { position: relative; margin-bottom: 4px; }
+.tree-node.depth-1 { padding-left: 28px; }
+.tree-node.depth-2 { padding-left: 52px; }
+.tree-node.depth-3 { padding-left: 76px; }
+.tree-connector {
+  position: absolute; top: -4px; bottom: 50%; width: 16px;
+  border-left: 1px solid var(--border-h); border-bottom: 1px solid var(--border-h);
+  left: 12px; border-bottom-left-radius: 4px;
+}
+.depth-2 .tree-connector { left: 36px; }
+.depth-3 .tree-connector { left: 60px; }
+.tree-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 4px;
+  background: var(--s2); border: 1px solid var(--border);
+  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
+  cursor: default;
+}
+.tree-card:hover { border-color: var(--border-h); background: #1a2030; }
+.tree-card.chain-violation {
+  border-color: var(--red) !important;
+  background: rgba(255,59,92,0.08) !important;
+  box-shadow: 0 0 16px rgba(255,59,92,0.3);
+  animation: chainViolation 2s ease-out forwards;
+}
+@keyframes chainViolation {
+  0%   { box-shadow: 0 0 24px rgba(255,59,92,0.6); border-color: var(--red); }
+  100% { box-shadow: none; border-color: var(--border); }
+}
+.tree-card-name { font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.tree-card-bar-wrap { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+.tree-card-bar-track { flex: 1; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+.tree-card-bar-fill  { height: 100%; border-radius: 1px; transition: width 500ms ease; }
+.tree-card-score { font-family: var(--mono); font-size: 9px; color: var(--cyan); min-width: 20px; text-align: right; }
+.tree-empty { padding: 40px 16px; text-align: center; color: var(--text3); font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; line-height: 2; }
+
 /* ── Right Section ────────────────────────────────────────────────────────── */
-.right { display: grid; grid-template-rows: 100px 1fr 160px; overflow: hidden; }
+.right { display: grid; grid-template-rows: 44px 100px 1fr 160px; overflow: hidden; }
 
 /* ── Top Metrics ──────────────────────────────────────────────────────────── */
 .metrics {
@@ -472,6 +545,25 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
   <!-- ── Right Section ───────────────────────────────────────────────────── -->
   <div class="right">
 
+    <!-- Scenario Selector -->
+    <div class="scenario-bar">
+      <button class="sc-btn active-all" id="sc-all" onclick="setScenario('all')">
+        <span class="sc-num sc-active-num-all" id="sc-num-all">ALL</span>
+        All Activity
+      </button>
+      <div class="sc-sep"></div>
+      <button class="sc-btn" id="sc-demo1" onclick="setScenario('demo1')">
+        <span class="sc-num" id="sc-num-demo1">01</span>
+        LangChain Enforcement
+      </button>
+      <div class="sc-sep"></div>
+      <button class="sc-btn" id="sc-demo2" onclick="setScenario('demo2')">
+        <span class="sc-num" id="sc-num-demo2">02</span>
+        Multi-Agent Chain
+      </button>
+      <span class="sc-desc" id="sc-desc">Showing all agent activity</span>
+    </div>
+
     <!-- Top Metrics -->
     <div class="metrics">
       <div class="metric blue" onclick="openModal('all')">
@@ -518,7 +610,7 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
       </div>
 
       <!-- Chart Panel -->
-      <div class="chart-panel">
+      <div class="chart-panel" id="chart-panel">
         <div class="panel-head" style="justify-content:center;">TRUST SCORE MONITOR</div>
         <div class="chart-overlay">
           <div class="chart-big-num" id="avg-score">—</div>
@@ -526,6 +618,16 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
         </div>
         <div class="chart-wrap">
           <canvas id="mainChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Delegation Tree Panel (Demo 2) -->
+      <div class="tree-panel" id="tree-panel">
+        <div class="panel-head" style="justify-content:center;">
+          <span style="color:var(--orange);">DELEGATION CHAIN</span>
+        </div>
+        <div id="delegation-tree">
+          <div class="tree-empty">Run demo_multiagent.py<br>to see the chain</div>
         </div>
       </div>
 
@@ -570,12 +672,51 @@ const WS_URL = `ws://${location.host}/ws`;
 const API    = `http://${location.host}`;
 
 let ws;
-let scoreHistory   = [];   // {score, decision, ts}
-let timelineEvents = [];   // last 20
+let scoreHistory   = [];
+let timelineEvents = [];
 let selectedAgent  = null;
+let currentScenario = 'all';
+let _allAgents = [];
 const MAX_FEED   = 100;
 const MAX_CHART  = 60;
 const MAX_TL     = 20;
+
+const SC_DESCS = {
+  all:   'Showing all agent activity',
+  demo1: 'LangChain tool enforcement — every call intercepted before execution',
+  demo2: '3-tier delegation chain — child agents cannot exceed parent scope',
+};
+const SC_PREFIXES = { demo1: 'langchain_', demo2: 'multiagent_' };
+
+// ── Scenario Selector ─────────────────────────────────────────────────────
+
+function setScenario(s) {
+  currentScenario = s;
+
+  // Update button styles
+  ['all','demo1','demo2'].forEach(id => {
+    const btn = document.getElementById(`sc-${id}`);
+    const num = document.getElementById(`sc-num-${id}`);
+    btn.className = 'sc-btn' + (s === id ? ` active-${id}` : '');
+    num.className = 'sc-num' + (s === id ? ` sc-active-num-${id}` : '');
+  });
+
+  // Update description
+  document.getElementById('sc-desc').textContent = SC_DESCS[s];
+
+  // Toggle chart vs tree panel
+  const showTree = (s === 'demo2');
+  document.getElementById('chart-panel').style.display = showTree ? 'none' : '';
+  const treePanel = document.getElementById('tree-panel');
+  treePanel.classList.toggle('visible', showTree);
+
+  // Refresh agents view
+  renderAgentPanel(_allAgents);
+  if (showTree) renderDelegationTree(_allAgents);
+
+  // Clear and repopulate feed from scoreHistory
+  document.getElementById('feed').innerHTML = '';
+}
 
 // ── Clock ─────────────────────────────────────────────────────────────────
 
@@ -635,6 +776,7 @@ function updateStats(d) {
 // ── Feed ──────────────────────────────────────────────────────────────────
 
 function addFeedItem(data) {
+  if (!matchesScenario(data.agent_id)) return;
   if (selectedAgent && data.agent_id !== selectedAgent) return;
 
   const feed   = document.getElementById('feed');
@@ -909,53 +1051,133 @@ function updateTimeline() {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 
+function getAgentScore(agent_id) {
+  for (let i = scoreHistory.length - 1; i >= 0; i--) {
+    if (scoreHistory[i].agent_id === agent_id) return scoreHistory[i].score;
+  }
+  return 80;
+}
+
+function matchesScenario(agent_id) {
+  if (currentScenario === 'all') return true;
+  const prefix = SC_PREFIXES[currentScenario];
+  return agent_id.startsWith(prefix);
+}
+
+function renderAgentPanel(agents) {
+  const panel = document.getElementById('agents-panel');
+  const filtered = agents.filter(a => matchesScenario(a.agent_id));
+  if (!filtered.length) {
+    panel.innerHTML = '<div style="padding:12px 16px;font-size:11px;color:var(--text3);">No agents for this scenario.</div>';
+    return;
+  }
+  panel.innerHTML = filtered.map(a => {
+    const score    = getAgentScore(a.agent_id);
+    const dotColor = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--green)';
+    const barCol   = barColor(score);
+    const isCrit   = score < 40;
+    const isSel    = selectedAgent === a.agent_id;
+    const depthBadge = a.delegation_depth > 0
+      ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);margin-left:4px;">D${a.delegation_depth}</span>`
+      : '';
+    const chainLine = a.delegation_depth > 0 && a.chain
+      ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.chain}">${a.chain}</div>`
+      : '';
+    return `
+      <div class="agent-card ${isCrit?'critical':''} ${isSel?'selected':''}"
+           onclick="filterAgent('${a.agent_id}')">
+        <div class="ac-top">
+          <span class="ac-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
+          <span class="ac-name" title="${a.name}">${a.agent_id}</span>
+          ${depthBadge}
+        </div>
+        ${chainLine}
+        <div class="ac-sub">${a.declared_purpose.slice(0,32)}…</div>
+        <div class="ac-bar-wrap">
+          <div class="ac-bar-track">
+            <div class="ac-bar-fill" style="width:${score}%;background:${barCol}"></div>
+          </div>
+          <span class="ac-bar-val">${score}</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
 async function refreshAgents() {
   try {
     const r = await fetch(`${API}/agents`);
-    const agents = await r.json();
-    const panel  = document.getElementById('agents-panel');
-    if (!agents.length) {
-      panel.innerHTML = '<div style="padding:12px 16px;font-size:11px;color:var(--text3);">No agents registered.</div>';
-      return;
-    }
-
-    // Compute last trust score per agent from scoreHistory
-    const agentScores = {};
-    scoreHistory.slice(-50).forEach(h => {
-      if (h.agent_id) agentScores[h.agent_id] = h.score;
-    });
-
-    panel.innerHTML = agents.map(a => {
-      const score    = agentScores[a.agent_id] || 80;
-      const dotColor = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--green)';
-      const barCol   = barColor(score);
-      const isCrit   = score < 40;
-      const isSel    = selectedAgent === a.agent_id;
-      const depthBadge = a.delegation_depth > 0
-        ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);margin-left:4px;">D${a.delegation_depth}</span>`
-        : '';
-      const chainLine = a.delegation_depth > 0 && a.chain
-        ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.chain}">${a.chain}</div>`
-        : '';
-      return `
-        <div class="agent-card ${isCrit?'critical':''} ${isSel?'selected':''}"
-             onclick="filterAgent('${a.agent_id}')">
-          <div class="ac-top">
-            <span class="ac-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
-            <span class="ac-name" title="${a.name}">${a.agent_id}</span>
-            ${depthBadge}
-          </div>
-          ${chainLine}
-          <div class="ac-sub">${a.declared_purpose.slice(0,32)}…</div>
-          <div class="ac-bar-wrap">
-            <div class="ac-bar-track">
-              <div class="ac-bar-fill" style="width:${score}%;background:${barCol}"></div>
-            </div>
-            <span class="ac-bar-val">${score}</span>
-          </div>
-        </div>`;
-    }).join('');
+    _allAgents = await r.json();
+    renderAgentPanel(_allAgents);
+    if (currentScenario === 'demo2') renderDelegationTree(_allAgents);
   } catch(e) {}
+}
+
+// ── Delegation Tree ───────────────────────────────────────────────────────
+
+function renderDelegationTree(agents) {
+  const el = document.getElementById('delegation-tree');
+  if (!el) return;
+  const multiAgents = agents.filter(a => a.agent_id.startsWith('multiagent_'));
+  if (!multiAgents.length) {
+    el.innerHTML = '<div class="tree-empty">Run demo_multiagent.py<br>to see the chain</div>';
+    return;
+  }
+
+  const byParent = {};
+  multiAgents.forEach(a => {
+    const p = a.delegated_by || '__root__';
+    if (!byParent[p]) byParent[p] = [];
+    byParent[p].push(a);
+  });
+
+  const roots = byParent['__root__'] || multiAgents.filter(a => !a.delegated_by);
+
+  function nodeHtml(agent, depth) {
+    const score    = getAgentScore(agent.agent_id);
+    const dotColor = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--green)';
+    const barCol   = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--cyan)';
+    const label    = agent.agent_id.replace('multiagent_', '');
+    const depthTag = depth > 0
+      ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);">D${depth}</span>`
+      : `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:var(--cyan-dim);color:var(--cyan);">ROOT</span>`;
+    const connector = depth > 0 ? `<div class="tree-connector"></div>` : '';
+    const children  = (byParent[agent.agent_id] || []).map(c => nodeHtml(c, depth + 1)).join('');
+    const scopeTip  = `Resources: ${(agent.authorized_resources||[]).join(', ')} | Actions: ${(agent.authorized_actions||[]).join(', ')}`;
+
+    return `
+      <div class="tree-node depth-${depth}" id="tnode-${agent.agent_id}">
+        ${connector}
+        <div class="tree-card" title="${scopeTip}">
+          <span style="width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 6px ${dotColor};flex-shrink:0;"></span>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              <span class="tree-card-name">${label}</span>
+              ${depthTag}
+            </div>
+            <div class="tree-card-bar-wrap">
+              <div class="tree-card-bar-track">
+                <div class="tree-card-bar-fill" style="width:${score}%;background:${barCol};"></div>
+              </div>
+              <span class="tree-card-score">${score}</span>
+            </div>
+          </div>
+        </div>
+        ${children}
+      </div>`;
+  }
+
+  el.innerHTML = roots.map(r => nodeHtml(r, 0)).join('');
+}
+
+function flashChainViolation(agent_id) {
+  const node = document.getElementById(`tnode-${agent_id}`);
+  if (!node) return;
+  const card = node.querySelector('.tree-card');
+  if (!card) return;
+  card.classList.remove('chain-violation');
+  void card.offsetWidth;
+  card.classList.add('chain-violation');
+  setTimeout(() => card.classList.remove('chain-violation'), 2500);
 }
 
 function filterAgent(id) {
@@ -1096,6 +1318,10 @@ function connect() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'stats') {
       updateStats(msg.data);
+    } else if (msg.type === 'agents') {
+      _allAgents = msg.data;
+      renderAgentPanel(_allAgents);
+      if (currentScenario === 'demo2') renderDelegationTree(_allAgents);
     } else if (msg.type === 'policies') {
       renderPolicies(msg.data);
     } else if (msg.type === 'decision') {
@@ -1110,6 +1336,10 @@ function connect() {
       updateTimeline();
       fetch(`${API}/audit/stats`).then(r=>r.json()).then(updateStats).catch(()=>{});
       refreshAgents();
+      // Flash chain violation node in delegation tree
+      if ((d.attack_flags||[]).some(f => f.includes('CHAIN_SCOPE_VIOLATION'))) {
+        flashChainViolation(d.agent_id);
+      }
     } else if (msg.type === 'injection') {
       addInjectionFeedItem(msg.data);
     } else if (msg.type === 'pending') {
