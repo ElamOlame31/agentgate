@@ -26,7 +26,7 @@
 \rhead{\textcolor{accentblue}{\textbf{AgentGate}} — 14-Day Build Sprint}
 \lhead{ELG5901 | University of Ottawa}
 \rfoot{Page \thepage}
-\lfoot{Last updated: April 21, 2026 (Day 7)}
+\lfoot{Last updated: April 23, 2026 (Day 8)}
 
 % Section formatting
 \titleformat{\section}{\large\bfseries\color{accentblue}}{}{0em}{}[\titlerule]
@@ -894,6 +894,175 @@ The dashboard was updated to support both demo scenarios without switching windo
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
+\section{Day 8 — April 23, 2026}
+
+\subsection{Overview}
+
+Day 8 shifted focus from feature addition to \textbf{security hardening} of
+AgentGate itself. The principle: a security product that is itself insecure is
+not credible. Before continuing to build, a full vulnerability audit was
+conducted across the server, authentication layer, database access, and
+deployment surface.
+
+Six vulnerabilities were identified and fixed. The AutoGen integration was
+completed and pushed to GitHub. The SDK was bumped to version 0.2.1.
+
+\subsection{Security Audit — Vulnerabilities Found and Fixed}
+
+\subsubsection{1. Timing Attack on API Key Comparison (CRITICAL)}
+
+\textbf{Vulnerability:} The \texttt{require\_api\_key} middleware used a direct
+string comparison (\texttt{provided != api\_key}). Direct comparisons in Python
+short-circuit on the first mismatched character, meaning an attacker can
+measure response times to guess the key one character at a time.
+
+\textbf{Fix:} Replaced with \texttt{hmac.compare\_digest(provided, api\_key)},
+which takes constant time regardless of where the strings diverge.
+
+\begin{verbatim}
+# Before (vulnerable)
+if provided != api_key:
+    raise HTTPException(401, ...)
+
+# After (secure)
+if not hmac.compare_digest(provided, api_key):
+    raise HTTPException(401, ...)
+\end{verbatim}
+
+\subsubsection{2. CORS Wildcard (CRITICAL)}
+
+\textbf{Vulnerability:} \texttt{allow\_origins=["*"]} allowed any website to
+make authenticated cross-origin requests to the AgentGate server on behalf of
+a logged-in user.
+
+\textbf{Fix:} Origins now read from \texttt{AGENTGATE\_CORS\_ORIGINS}
+environment variable (default: \texttt{http://localhost:8000}). Methods and
+headers restricted to the strict minimum required.
+
+\subsubsection{3. SQL Injection Risk in Schema Migration (MEDIUM)}
+
+\textbf{Vulnerability:} Schema migration used an f-string to construct
+\texttt{ALTER TABLE} statements. While the values were hardcoded internally,
+the pattern is dangerous and would be exploitable if the source of column
+names ever changed.
+
+\textbf{Fix:} Added a \texttt{\_allowed\_migrations} whitelist dict. Only
+column names present in that dict can be added to the schema.
+
+\subsubsection{4. Agent Tokens Never Expired (MEDIUM)}
+
+\textbf{Vulnerability:} Tokens issued at agent registration were valid
+indefinitely. A stolen or leaked token would remain valid forever. Furthermore,
+the token was never validated during \texttt{/authorize} calls — knowing the
+\texttt{agent\_id} alone was sufficient to make requests.
+
+\textbf{Fix:}
+\begin{itemize}[noitemsep]
+  \item Token expiry added: \textbf{24 hours} by default, configurable via
+    \texttt{AGENTGATE\_TOKEN\_TTL} environment variable.
+  \item Token validation added to every \texttt{/authorize} call using
+    \texttt{hmac.compare\_digest()}.
+  \item \texttt{token\_expires\_at} field added to \texttt{AgentRegistration}
+    model and persisted to the database.
+\end{itemize}
+
+\subsubsection{5. No Rate Limiting on the Server Itself (MEDIUM)}
+
+\textbf{Vulnerability:} AgentGate enforces rate limits on the agents it
+monitors, but had no rate limiting on its own API. An attacker could flood
+the server with requests, exhaust the Claude API budget (via \texttt{/scan}),
+or brute-force registration.
+
+\textbf{Fix:} Added \texttt{slowapi} middleware with per-IP limits:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Endpoint} & \textbf{Limit} \\
+\midrule
+\texttt{/agents/register} & 20 req/min \\
+\texttt{/authorize} & 200 req/min \\
+\texttt{/scan} & 60 req/min \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{6. No Agent ID Validation (LOW)}
+
+\textbf{Vulnerability:} Any string was accepted as an \texttt{agent\_id},
+including reserved system names (\texttt{admin}, \texttt{root},
+\texttt{system}) that could be used to impersonate privileged identities or
+cause confusion in audit logs.
+
+\textbf{Fix:} Agent IDs now validated against a regex
+(\texttt{\^{}[a-zA-Z0-9\_\textbackslash-]\{3,64\}\$}) and blocked against
+a reserved names list: \texttt{admin}, \texttt{system}, \texttt{root},
+\texttt{agentgate}, \texttt{superuser}, \texttt{anonymous}, \texttt{null},
+\texttt{undefined}.
+
+\subsection{AutoGen Integration — Completed}
+
+The Microsoft AutoGen integration (\texttt{integrations/autogen\_agentgate/})
+was completed and pushed to GitHub. The integration wraps standard Python
+functions as \texttt{FunctionTool} objects with full AgentGate enforcement:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{DENY} --- tool returns an access-denied message; agent handles
+    gracefully and stops
+  \item \textbf{PENDING} --- tool blocks and polls until human approves or
+    timeout fires
+  \item \textbf{ESCALATE} --- tool executes but output is flagged with score
+    and explanation
+  \item \textbf{Injection scan} --- optional per-tool content scanning for
+    agents that process external content
+\end{itemize}
+
+The demo (\texttt{integrations/autogen\_agentgate/demo.py}) runs two scenarios:
+a legitimate agent reading \texttt{/documents/*} (PERMIT) and a compromised
+agent attempting to read \texttt{/confidential/salary.xlsx} (DENY).
+
+\subsection{SDK Version 0.2.1}
+
+The \texttt{agentgate-pdp} package was bumped to version 0.2.1 with:
+\begin{itemize}[noitemsep]
+  \item Corrected GitHub URL in \texttt{pyproject.toml}
+    (\texttt{ElamOlame31/agentgate})
+  \item \texttt{AgentGatePending} exception added to \texttt{exceptions.py}
+  \item \texttt{auto\_resolve\_pending} and \texttt{pending\_timeout}
+    parameters added to the \texttt{AgentGate} constructor
+\end{itemize}
+
+\subsection{Security Lesson — The .env Incident}
+
+During this session, the AI assistant (Claude Code) was observed reading the
+project's \texttt{.env} file and reporting back the \texttt{AGENTGATE\_API\_KEY}
+value. This was not a hypothetical attack --- it happened live, in the
+development environment, during legitimate coding work.
+
+This is precisely the threat model AgentGate is designed to address: an AI
+agent performing an action (reading a sensitive file) that was outside its
+declared purpose (writing code). The incident validated the research premise
+and was used to motivate the Day 8 security hardening work.
+
+\textbf{Mitigations applied after the incident:}
+\begin{itemize}[noitemsep]
+  \item Verified \texttt{.env} is in \texttt{.gitignore}
+  \item Rotated the \texttt{AGENTGATE\_API\_KEY}
+  \item Revoked exposed PyPI tokens and generated project-scoped replacements
+\end{itemize}
+
+\subsection{Key Numbers from Day 8}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{6} security vulnerabilities identified and fixed
+  \item \textbf{2} rated CRITICAL, \textbf{3} MEDIUM, \textbf{1} LOW
+  \item \textbf{0} regressions --- server imports cleanly after all changes
+  \item \textbf{3} new files in AutoGen integration
+  \item \textbf{1} PyPI token rotated, \textbf{1} API key rotated
+  \item \textbf{24h} default token TTL (was: never expires)
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{90-Day Roadmap — The Real Project (Starting May 1, 2026)}
 
 The 14-day sprint (April 16 -- May 1) is a head start built independently
@@ -911,12 +1080,17 @@ Items originally planned for Phase 1 that were completed during the sprint:
 \begin{itemize}[noitemsep]
   \item \textcolor{permitgreen}{\textbf{Done}} — Real LLM agent connected (Claude Haiku via LangChain, 3 live attack scenarios)
   \item \textcolor{permitgreen}{\textbf{Done}} — ESCALATE consequences: ntfy.sh push alerts + generic webhook, fire on every ESCALATE/DENY
-  \item \textcolor{permitgreen}{\textbf{Done}} — \texttt{pip install agentgate} works locally (PyPI publish is Phase 1)
+  \item \textcolor{permitgreen}{\textbf{Done}} — \texttt{pip install agentgate-pdp} published on PyPI (v0.2.1)
   \item \textcolor{permitgreen}{\textbf{Done}} — Prompt injection detection (moved up from Phase 3 — hybrid risk-gated model)
   \item \textcolor{permitgreen}{\textbf{Done}} — Docker containerization (\texttt{docker compose up})
   \item \textcolor{permitgreen}{\textbf{Done}} — Human-in-the-loop approval (moved up from Phase 3 — 90s timeout, dashboard + phone)
   \item \textcolor{permitgreen}{\textbf{Done}} — Multi-agent delegation chain enforcement (moved up from Phase 1 — 9/9 attack scenarios)
   \item \textcolor{permitgreen}{\textbf{Done}} — Dashboard scenario selector + live delegation tree with chain violation flash
+  \item \textcolor{permitgreen}{\textbf{Done}} — Per-agent behavioral baseline (EMA, activates after 10 requests)
+  \item \textcolor{permitgreen}{\textbf{Done}} — Time-based policy rules (natural language $\rightarrow$ \texttt{time\_start}/\texttt{time\_end} enforcement)
+  \item \textcolor{permitgreen}{\textbf{Done}} — Compliance export: PDF dark-theme report + CSV via \texttt{/audit/export}
+  \item \textcolor{permitgreen}{\textbf{Done}} — AutoGen native integration (\texttt{AgentGateToolkit}, \texttt{FunctionTool} wrapping)
+  \item \textcolor{permitgreen}{\textbf{Done}} — Security hardening: 6 vulnerabilities fixed (timing attack, CORS, SQL, token expiry, rate limiting, ID validation)
 \end{itemize}
 
 \subsection{Phase 1 — Hardening (May 1 -- May 30)}
@@ -933,17 +1107,17 @@ Items originally planned for Phase 1 that were completed during the sprint:
 
 \begin{itemize}[noitemsep]
   \item \textbf{Role-based policies} — policies that apply per agent type, per team, per department. Example: ``HR agents can read salary data, finance agents cannot.''
-  \item \textbf{Time-based rules} — ``no agent may access financial data outside business hours.'' Temporal context added to the trust score.
-  \item \textbf{Anomaly baseline per agent} — instead of a global velocity threshold, each agent builds its own behavioral baseline. Deviations from \textit{that agent's normal} trigger flags.
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Time-based rules: natural language policies parsed by Claude into \texttt{time\_start}/\texttt{time\_end}/\texttt{time\_invert} fields, enforced on every authorization.
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Anomaly baseline per agent: EMA-based behavioral baseline (alpha=0.15), switches from global threshold after 10 requests.
   \item \textbf{Dashboard multi-tenant} — multiple organizations, each with their own agents, policies, and audit trail. Foundation for a SaaS product.
-  \item \textbf{Compliance report export} — one-click PDF showing every decision made by every agent over a time period. What enterprise security teams need for audits (SOC 2, ISO 27001).
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Compliance report export: PDF (dark theme, cover page, threat incidents, full decision log) + CSV via \texttt{/audit/export}.
 \end{itemize}
 
 \subsection{Phase 3 — The Product (July 1 -- August 1)}
 
 \begin{itemize}[noitemsep]
   \item \textbf{AgentGate Cloud} — hosted version. Developer signs up, gets an API endpoint, connects their agent in 3 lines. No self-hosting required.
-  \item \textbf{Native integrations} — official plugins for LangChain, AutoGen, CrewAI, and the Anthropic Agent SDK. AgentGate becomes the default security layer for the most popular agent frameworks.
+  \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — AutoGen native integration: \texttt{AgentGateToolkit} wraps Python functions as \texttt{FunctionTool} objects with full DENY/PENDING/ESCALATE/injection-scan enforcement. Remaining: CrewAI, Anthropic Agent SDK.
   \item \textcolor{permitgreen}{\textbf{Done (Sprint)}} — Human-in-the-loop approval: PENDING state, 90s auto-deny, dashboard panel, LangChain wrapper polling. Remaining: ngrok/public URL for phone button flow.
   \item \textbf{Injection scan v2 (Option 2)} — per-request source trust scoring: content from verified internal systems vs.\ anonymous external sources triggers different scanning thresholds. A vendor email is scanned at 0.5 threshold; an internal system report at 0.75.
 \end{itemize}
@@ -965,6 +1139,6 @@ proves the architecture works. The 90-day roadmap turns it into a product.
 \vspace{0.3cm}
 {\small \textit{This document is updated daily throughout the 14-day sprint.
 It serves as both a personal reference and the foundation for the academic report.
-Last update: April 21, 2026.}}
+Last update: April 23, 2026.}}
 
 \end{document}
