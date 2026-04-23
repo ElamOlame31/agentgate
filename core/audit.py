@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import json
 import time
@@ -40,17 +41,22 @@ def init_db():
             delegation_depth INTEGER,
             token TEXT,
             registered_at REAL,
+            token_expires_at REAL DEFAULT NULL,
             processes_external_content INTEGER DEFAULT 0,
             requires_human_approval INTEGER DEFAULT 0,
             scope_at_delegation TEXT DEFAULT NULL
         )
     """)
     # Migrate existing tables that predate these columns
-    for col, default in [
-        ("processes_external_content", "0"),
-        ("requires_human_approval", "0"),
-        ("scope_at_delegation", "NULL"),
-    ]:
+    _allowed_migrations = {
+        "processes_external_content": "0",
+        "requires_human_approval": "0",
+        "scope_at_delegation": "NULL",
+        "token_expires_at": "NULL",
+    }
+    for col, default in _allowed_migrations.items():
+        if col not in _allowed_migrations:
+            continue
         try:
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
         except Exception:
@@ -151,20 +157,24 @@ def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> li
     return [dict(r) for r in rows]
 
 
+TOKEN_TTL = float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600)))
+
+
 def save_agent(agent: AgentRegistration):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO agents
         (agent_id, name, declared_purpose, authorized_resources, authorized_actions,
-         delegated_by, delegation_depth, token, registered_at,
+         delegated_by, delegation_depth, token, registered_at, token_expires_at,
          processes_external_content, requires_human_approval, scope_at_delegation)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         agent.agent_id, agent.name, agent.declared_purpose,
         json.dumps(agent.authorized_resources),
         json.dumps(agent.authorized_actions),
         agent.delegated_by, agent.delegation_depth,
         agent.token, time.time(),
+        time.time() + TOKEN_TTL,
         int(agent.processes_external_content),
         int(agent.requires_human_approval),
         json.dumps(agent.scope_at_delegation) if agent.scope_at_delegation else None,

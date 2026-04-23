@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentgate-pdp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Context-aware trust authorization for agentic AI systems"
 readme = "README.md"
 license = "MIT"
@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/agentgate/agentgate"
+Homepage = "https://github.com/ElamOlame31/agentgate"
 Documentation = "https://agentgate.dev/docs"
 
 [tool.setuptools.packages.find]

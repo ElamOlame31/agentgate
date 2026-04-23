@@ -2,7 +2,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import hmac
 import json
+import re
+import time
 import uuid
 from contextlib import asynccontextmanager
 
@@ -11,6 +14,10 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 load_dotenv()
 
@@ -24,7 +31,7 @@ async def require_api_key(request: Request):
     if api_key is None:
         return  # auth disabled — no key configured
     provided = request.headers.get("X-API-Key", "")
-    if provided != api_key:
+    if not hmac.compare_digest(provided, api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing API key. Set X-API-Key header.")
 
 
@@ -95,20 +102,36 @@ async def lifespan(app: FastAPI):
     yield
 
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="AgentGate PDP", version="0.2.0", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, lambda req, exc: HTTPException(status_code=429, detail="Rate limit exceeded"))
+app.add_middleware(SlowAPIMiddleware)
+
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("AGENTGATE_CORS_ORIGINS", "http://localhost:8000").split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["X-API-Key", "Content-Type"],
 )
 
 
 # ── Agent Registration ──────────────────────────────────────────────────────
 
+_RESERVED_IDS = {"admin", "system", "root", "agentgate", "superuser", "anonymous", "null", "undefined"}
+_AGENT_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]{3,64}$')
+
+
 @app.post("/agents/register", response_model=dict, dependencies=[Depends(require_api_key)])
-async def register_agent(reg: AgentRegistration):
+@limiter.limit("20/minute")
+async def register_agent(request: Request, reg: AgentRegistration):
+    if not _AGENT_ID_RE.match(reg.agent_id):
+        raise HTTPException(status_code=400, detail="agent_id must be 3-64 chars, alphanumeric/hyphens/underscores only")
+    if reg.agent_id.lower() in _RESERVED_IDS:
+        raise HTTPException(status_code=400, detail=f"agent_id '{reg.agent_id}' is reserved")
     if not reg.token:
         reg.token = str(uuid.uuid4())
     _agents[reg.agent_id] = reg
@@ -210,62 +233,69 @@ def _agent_list():
 # ── Authorization (PDP) ─────────────────────────────────────────────────────
 
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
-async def authorize(request: AuthorizationRequest):
-    if not request.request_id:
-        request.request_id = str(uuid.uuid4())
+@limiter.limit("200/minute")
+async def authorize(request: Request, body: AuthorizationRequest):
+    if not body.request_id:
+        body.request_id = str(uuid.uuid4())
 
     # Unknown agent → deny immediately
-    if request.agent_id not in _agents:
-        response = _build_unknown_agent_response(request)
+    if body.agent_id not in _agents:
+        response = _build_unknown_agent_response(body)
         audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         return response
 
-    agent = _agents[request.agent_id]
+    agent = _agents[body.agent_id]
+
+    # ── Token validation ──────────────────────────────────────────────────
+    if agent.token and not hmac.compare_digest(body.token or "", agent.token):
+        raise HTTPException(status_code=401, detail="Invalid agent token")
+    if agent.token_expires_at and time.time() > agent.token_expires_at:
+        raise HTTPException(status_code=401, detail="Agent token expired — re-register")
 
     # ── Policy check FIRST (hard rules override trust score) ──────────────
-    policy_match = check_policies(request.agent_id, request.action, request.resource)
+    policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
-        response = _build_policy_blocked_response(request, agent, policy_match)
+        response = _build_policy_blocked_response(body, agent, policy_match)
         audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
-            response.decision.value, request.agent_id,
-            request.action, request.resource,
+            response.decision.value, body.agent_id,
+            body.action, body.resource,
             response.explanation, response.attack_flags,
             response.trust_breakdown.final_score,
         )
         return response
 
     # ── Trust scoring ──────────────────────────────────────────────────────
-    breakdown, flags = trust_engine.compute_trust(agent, request, _agents)
+    breakdown, flags = trust_engine.compute_trust(agent, body, _agents)
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
-        agent.name, request.action, request.resource,
+        agent.name, body.action, body.resource,
         breakdown, decision, flags
     )
 
     # ── Human-in-the-loop: pause ESCALATE for manual review ───────────────
     if decision == Decision.ESCALATE and agent.requires_human_approval:
         pending = approvals.create_pending(
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            action=request.action,
-            resource=request.resource,
+            request_id=body.request_id,
+            agent_id=body.agent_id,
+            action=body.action,
+            resource=body.resource,
             explanation=explanation,
             trust_score=breakdown.final_score,
         )
         await manager.broadcast({"type": "pending", "data": pending.to_dict()})
         fire_approval_request(
-            request.request_id, request.agent_id,
-            request.action, request.resource,
+            body.request_id, body.agent_id,
+            body.action, body.resource,
             explanation, breakdown.final_score,
         )
         response = AuthorizationResponse(
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            action=request.action,
-            resource=request.resource,
+            request_id=body.request_id,
+            agent_id=body.agent_id,
+            action=body.action,
+            resource=body.resource,
             decision=Decision.PENDING,
             trust_breakdown=breakdown,
             explanation=f"[PENDING HUMAN APPROVAL] {explanation}",
@@ -275,10 +305,10 @@ async def authorize(request: AuthorizationRequest):
         return response
 
     response = AuthorizationResponse(
-        request_id=request.request_id,
-        agent_id=request.agent_id,
-        action=request.action,
-        resource=request.resource,
+        request_id=body.request_id,
+        agent_id=body.agent_id,
+        action=body.action,
+        resource=body.resource,
         decision=decision,
         trust_breakdown=breakdown,
         explanation=explanation,
@@ -288,8 +318,8 @@ async def authorize(request: AuthorizationRequest):
     audit.log_decision(response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})
     fire_alert(
-        decision.value, request.agent_id,
-        request.action, request.resource,
+        decision.value, body.agent_id,
+        body.action, body.resource,
         explanation, flags,
         breakdown.final_score,
     )
@@ -299,7 +329,8 @@ async def authorize(request: AuthorizationRequest):
 # ── Content Scan (Injection Detection) ─────────────────────────────────────
 
 @app.post("/scan", response_model=ContentScanResponse, dependencies=[Depends(require_api_key)])
-async def scan_content_endpoint(body: ContentScanRequest):
+@limiter.limit("60/minute")
+async def scan_content_endpoint(request: Request, body: ContentScanRequest):
     from core.injection_detector import should_scan, scan_content
     from core.trust_engine import classify_resource_sensitivity
 
