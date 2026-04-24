@@ -34,7 +34,7 @@ import uuid
 import httpx
 from functools import wraps
 
-from agentgate.exceptions import AgentGateDenied, AgentGateEscalated, AgentGateNotRegistered, AgentGatePending
+from agentgate.exceptions import AgentGateDenied, AgentGateEscalated, AgentGateNotRegistered, AgentGatePending, AgentGateUnavailable
 
 
 class AgentGate:
@@ -104,13 +104,16 @@ class AgentGate:
         if scope_at_delegation:
             payload["scope_at_delegation"] = scope_at_delegation
 
-        r = httpx.post(
-            f"{self.url}/agents/register",
-            json=payload,
-            headers=self._headers,
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
+        try:
+            r = httpx.post(
+                f"{self.url}/agents/register",
+                json=payload,
+                headers=self._headers,
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
         self._agent_id = agent_id
         self._token = r.json()["token"]
         return self
@@ -133,20 +136,23 @@ class AgentGate:
         if not self._agent_id or not self._token:
             raise AgentGateNotRegistered("Call gate.register(...) before gate.authorize()")
 
-        r = httpx.post(
-            f"{self.url}/authorize",
-            headers=self._headers,
-            json={
-                "agent_id": self._agent_id,
-                "token": self._token,
-                "action": action,
-                "resource": resource,
-                "justification": justification,
-                "request_id": str(uuid.uuid4()),
-            },
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
+        try:
+            r = httpx.post(
+                f"{self.url}/authorize",
+                headers=self._headers,
+                json={
+                    "agent_id": self._agent_id,
+                    "token": self._token,
+                    "action": action,
+                    "resource": resource,
+                    "justification": justification,
+                    "request_id": str(uuid.uuid4()),
+                },
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
         result = r.json()
         decision = result["decision"]
 
