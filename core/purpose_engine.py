@@ -40,9 +40,20 @@ def score_purpose_alignment(declared_purpose: str, action: str, resource: str, j
     return round(score, 2)
 
 
-# Dangerous action keywords that should heavily penalize alignment for read-only purposes
+# Actions that are destructive by nature
 _DESTRUCTIVE_ACTIONS = {"delete", "remove", "drop", "truncate", "wipe", "purge", "destroy", "overwrite"}
+
+# Actions that move data outside the system — exfiltration signals
+_EXFILTRATION_ACTIONS = {"write", "send", "upload", "export", "forward", "post", "publish"}
+
+# Paths that are sensitive and should penalize out-of-scope agents
 _SENSITIVE_PATHS = {"confidential", "salary", "payroll", "password", "secret", "private", "admin", "root", "cred"}
+
+# Paths that indicate data is leaving the system
+_EXTERNAL_PATHS = {"external", "email", "webhook", "smtp", "ftp", "s3", "upload", "export", "outbound"}
+
+# Words indicating a read-only declared purpose
+_READ_PURPOSE_WORDS = {"read", "summarize", "analyze", "view", "list", "search", "query", "report"}
 
 
 def get_action_penalty(declared_purpose: str, action: str, resource: str) -> float:
@@ -55,11 +66,19 @@ def get_action_penalty(declared_purpose: str, action: str, resource: str) -> flo
     resource_lower = resource.lower()
 
     penalty = 1.0
+    is_read_purpose = any(w in purpose_lower for w in _READ_PURPOSE_WORDS)
 
     # Destructive action by a read-purpose agent
-    if action_lower in _DESTRUCTIVE_ACTIONS:
-        read_words = {"read", "summarize", "analyze", "view", "list", "search", "query", "report"}
-        if any(w in purpose_lower for w in read_words):
+    if action_lower in _DESTRUCTIVE_ACTIONS and is_read_purpose:
+        penalty *= 0.2
+
+    # Exfiltration: write/send/upload by a read-purpose agent to an external destination
+    if action_lower in _EXFILTRATION_ACTIONS and is_read_purpose:
+        penalty *= 0.25
+
+    # Writing to an external path (data leaving the system)
+    if any(kw in resource_lower for kw in _EXTERNAL_PATHS):
+        if is_read_purpose:
             penalty *= 0.2
 
     # Accessing sensitive paths outside declared scope

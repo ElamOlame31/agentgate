@@ -145,6 +145,17 @@ def get_agent_decisions(agent_id: str, limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def log_request_history(agent_id: str, action: str, resource: str):
+    """Record a single request in the history window (used by trust engine + tests)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO request_history VALUES (?,?,?,?,?)",
+        (str(uuid.uuid4()), agent_id, action, resource, time.time())
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

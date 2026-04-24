@@ -48,22 +48,44 @@ Write one crisp sentence explaining WHY this decision was made. Be specific abou
         # Fallback explanation without API
         if decision == Decision.DENY:
             weakest = _weakest_score(breakdown, flags)
-            return f"Denied: {weakest}"
+            return f"Access denied: {weakest}."
         elif decision == Decision.ESCALATE:
-            if flags and breakdown.final_score >= breakdown.threshold_required:
-                return f"Escalated: score {breakdown.final_score}/100 is sufficient but suspicious flags detected — {flags[0]}."
-            elif flags:
-                return f"Escalated: score {breakdown.final_score}/100 below required {breakdown.threshold_required} and flag raised — {flags[0]}."
+            if flags:
+                reason = _humanize_flag(flags[0])
+                return f"Flagged for review: {reason} (trust score {breakdown.final_score}/100)."
             else:
                 weakest = _weakest_score(breakdown, [])
-                return f"Escalated: score {breakdown.final_score}/100 below required threshold {breakdown.threshold_required} — {weakest}."
+                return f"Flagged for review: trust score {breakdown.final_score}/100 is below the required {breakdown.threshold_required} — {weakest}."
         else:
-            return f"Permitted: trust score {breakdown.final_score}/100 meets threshold {breakdown.threshold_required}."
+            return f"Access granted: agent identity, purpose, and behavior all check out (score {breakdown.final_score}/100)."
+
+
+def _humanize_flag(flag: str) -> str:
+    """Convert a raw internal flag into a human-readable explanation."""
+    if flag.startswith("RESOURCE_OUT_OF_SCOPE:"):
+        resource = flag.split(":", 1)[1]
+        return f"the requested resource '{resource}' is outside this agent's authorized scope"
+    if flag.startswith("UNAUTHORIZED_ACTION:"):
+        action = flag.split(":", 1)[1]
+        return f"the action '{action}' is not in this agent's authorized actions"
+    if flag.startswith("CRITICAL_VELOCITY:"):
+        return "the agent is making requests far above its normal rate — possible exfiltration attempt"
+    if flag.startswith("HIGH_VELOCITY:"):
+        return "the agent's request rate is unusually high"
+    if "CHAIN_SCOPE_VIOLATION" in flag:
+        return "the request exceeds the scope granted in the agent's delegation chain"
+    if "TOKEN_MISMATCH" in flag:
+        return "the agent token does not match — possible identity spoofing"
+    if "SCOPE_ESCALATION" in flag:
+        return "the delegated agent is attempting to exceed its parent's permissions"
+    if "REPETITIVE_ACTION" in flag:
+        return "the agent is repeating the same action in a tight loop — suspicious pattern"
+    return flag.lower().replace("_", " ")
 
 
 def _weakest_score(breakdown: TrustBreakdown, flags: list[str]) -> str:
     if flags:
-        return f"critical flag raised: {flags[0]}"
+        return _humanize_flag(flags[0])
     scores = {
         "identity": breakdown.identity_score,
         "delegation": breakdown.delegation_score,
