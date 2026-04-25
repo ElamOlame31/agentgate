@@ -107,7 +107,7 @@ header {
 }
 .agents-list { overflow-y: auto; flex: 1; }
 .agent-card {
-  padding: 10px 16px; cursor: default;
+  padding: 10px 16px; cursor: pointer;
   border-bottom: 1px solid var(--border);
   border-left: 2px solid transparent;
   transition: background 150ms ease, border-color 150ms ease;
@@ -141,7 +141,7 @@ header {
 .policy-add {
   background: var(--cyan); color: #000; border: none;
   border-radius: 4px; padding: 6px 10px; font-size: 10px;
-  font-weight: 700; letter-spacing: 0.05em; cursor: default;
+  font-weight: 700; letter-spacing: 0.05em; cursor: pointer;
   transition: opacity 150ms ease;
   font-family: var(--mono);
 }
@@ -160,7 +160,7 @@ header {
 .pi-body { flex: 1; min-width: 0; }
 .pi-rule { font-family: var(--mono); font-size: 9px; color: var(--text3); }
 .pi-desc { font-size: 10px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pi-del  { background: none; border: none; color: var(--text3); font-size: 14px; cursor: default; padding: 0; line-height: 1; flex-shrink: 0; }
+.pi-del  { background: none; border: none; color: var(--text3); font-size: 14px; cursor: pointer; padding: 0; line-height: 1; flex-shrink: 0; }
 .pi-del:hover { color: var(--red); }
 
 /* ── Scenario Selector ────────────────────────────────────────────────────── */
@@ -176,7 +176,7 @@ header {
   padding: 0 14px; height: 100%; border: none; border-bottom: 2px solid transparent;
   background: none; color: var(--text3);
   font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
-  cursor: default; letter-spacing: 0.05em;
+  cursor: pointer; letter-spacing: 0.05em;
   transition: color 150ms ease, border-color 150ms ease;
 }
 .sc-btn:hover { color: var(--text2); }
@@ -216,7 +216,7 @@ header {
   padding: 8px 10px; border-radius: 4px;
   background: var(--s2); border: 1px solid var(--border);
   transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
-  cursor: default;
+  cursor: default;  /* read-only display, not clickable */
 }
 .tree-card:hover { border-color: var(--border-h); background: #1a2030; }
 .tree-card.chain-violation {
@@ -246,7 +246,7 @@ header {
 }
 .metric {
   padding: 16px 20px; border-right: 1px solid var(--border);
-  cursor: default; transition: background 150ms ease;
+  cursor: pointer; transition: background 150ms ease;
   position: relative; overflow: hidden;
 }
 .metric:last-child { border-right: none; }
@@ -416,14 +416,14 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 .btn-approve {
   background: rgba(0,208,132,0.15); border: 1px solid rgba(0,208,132,0.4);
   color: var(--green); font-family: var(--mono); font-size: 10px; font-weight: 700;
-  padding: 5px 12px; border-radius: 4px; cursor: default; letter-spacing: 0.05em;
+  padding: 5px 12px; border-radius: 4px; cursor: pointer; letter-spacing: 0.05em;
   transition: background 150ms ease, box-shadow 150ms ease;
 }
 .btn-approve:hover { background: rgba(0,208,132,0.3); box-shadow: 0 0 10px rgba(0,208,132,0.3); }
 .btn-deny {
   background: rgba(255,59,92,0.12); border: 1px solid rgba(255,59,92,0.35);
   color: var(--red); font-family: var(--mono); font-size: 10px; font-weight: 700;
-  padding: 5px 12px; border-radius: 4px; cursor: default; letter-spacing: 0.05em;
+  padding: 5px 12px; border-radius: 4px; cursor: pointer; letter-spacing: 0.05em;
   transition: background 150ms ease, box-shadow 150ms ease;
 }
 .btn-deny:hover { background: rgba(255,59,92,0.25); box-shadow: 0 0 10px rgba(255,59,92,0.25); }
@@ -476,7 +476,7 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 .modal-sub   { font-size: 11px; color: var(--text3); margin-left: 10px; }
 .modal-x {
   background: var(--s2); border: 1px solid var(--border); color: var(--text3);
-  width: 24px; height: 24px; border-radius: 4px; cursor: default;
+  width: 24px; height: 24px; border-radius: 4px; cursor: pointer;
   font-size: 14px; display: flex; align-items: center; justify-content: center;
   transition: color 150ms, border-color 150ms;
 }
@@ -513,7 +513,7 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
       <div class="pulse-inner"></div>
     </div>
   </div>
-  <div class="h-center">TRUST AUTHORIZATION LAYER &nbsp;·&nbsp; v0.2 &nbsp;·&nbsp; POLICY DECISION POINT</div>
+  <div class="h-center">TRUST AUTHORIZATION LAYER &nbsp;·&nbsp; v0.2.1 &nbsp;·&nbsp; POLICY DECISION POINT</div>
   <div class="h-right">
     <div style="display:flex;gap:6px;">
       <button onclick="exportReport('pdf')" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 10px;background:rgba(0,212,255,.08);border:1px solid var(--cyan);color:var(--cyan);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Download PDF compliance report">⬇ PDF</button>
@@ -765,6 +765,18 @@ function barColor(score) {
   return 'var(--cyan)';
 }
 
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function scoreBarColor(s) {
+  if (s < 40) return 'var(--red)';
+  if (s < 70) return 'var(--orange)';
+  return 'var(--cyan)';
+}
+
 function bumpCounter(id, target) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -804,11 +816,11 @@ function addFeedItem(data) {
   row.className = 'req-row' + (dec==='DENY' ? ' blocked' : '');
   row.innerHTML = `
     <span class="req-dot ${dotCls}"></span>
-    <span class="req-time">${ts}</span>
-    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
-    <span class="req-path"><span class="action">${data.action.toUpperCase()}</span> ${data.resource}</span>
+    <span class="req-time">${esc(ts)}</span>
+    <span class="req-agent" title="${esc(data.agent_id)}">${esc(data.agent_id)}</span>
+    <span class="req-path"><span class="action">${esc(data.action.toUpperCase())}</span> ${esc(data.resource)}</span>
     <span class="score-badge ${scoreClass(score)}">${scoreLabel(score)} ${score}</span>
-    <span class="req-reason" title="${reason}">${reason}</span>
+    <span class="req-reason" title="${esc(reason)}">${esc(reason)}</span>
   `;
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
@@ -882,9 +894,9 @@ function addPending(data) {
   row.style.borderLeft = '3px solid var(--orange)';
   row.innerHTML = `
     <span class="req-dot escalate"></span>
-    <span class="req-time">${ts}</span>
-    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
-    <span class="req-path"><span class="action" style="background:var(--orange);color:#000;padding:1px 5px;border-radius:3px;font-size:9px;">PENDING</span> ${data.action} ${data.resource}</span>
+    <span class="req-time">${esc(ts)}</span>
+    <span class="req-agent" title="${esc(data.agent_id)}">${esc(data.agent_id)}</span>
+    <span class="req-path"><span class="action" style="background:var(--orange);color:#000;padding:1px 5px;border-radius:3px;font-size:9px;">PENDING</span> ${esc(data.action)} ${esc(data.resource)}</span>
     <span class="score-badge low">ESCALATE ${Math.round(data.trust_score)}</span>
     <span class="req-reason">Awaiting human approval…</span>
   `;
@@ -931,11 +943,11 @@ function addInjectionFeedItem(data) {
   row.style.borderLeft = isInj ? '3px solid var(--red)' : '3px solid var(--orange)';
   row.innerHTML = `
     <span class="req-dot ${isInj ? 'deny' : 'escalate'}"></span>
-    <span class="req-time">${ts}</span>
-    <span class="req-agent" title="${data.agent_id}">${data.agent_id}</span>
-    <span class="req-path"><span class="action" style="background:${isInj ? 'var(--red)' : 'var(--orange)'};color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;">${label}</span> content_scan</span>
+    <span class="req-time">${esc(ts)}</span>
+    <span class="req-agent" title="${esc(data.agent_id)}">${esc(data.agent_id)}</span>
+    <span class="req-path"><span class="action" style="background:${isInj ? 'var(--red)' : 'var(--orange)'};color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;">${esc(label)}</span> content_scan</span>
     <span class="score-badge" style="background:${isInj ? 'rgba(255,59,92,.15)' : 'rgba(245,158,11,.15)'};color:${isInj ? 'var(--red)' : 'var(--orange)'};">${pct}%</span>
-    <span class="req-reason" title="${data.evidence}">${data.evidence}</span>
+    <span class="req-reason" title="${esc(data.evidence)}">${esc(data.evidence)}</span>
   `;
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
@@ -946,19 +958,33 @@ function addInjectionFeedItem(data) {
 function updateLastDecision(data) {
   const tb  = data.trust_breakdown;
   const col = decisionColor(data.decision);
+  const dims = [
+    ['IDENTITY',  tb.identity_score],
+    ['DELEGATE',  tb.delegation_score],
+    ['PURPOSE',   tb.purpose_alignment_score],
+    ['BEHAVIOR',  tb.behavioral_score],
+  ];
+  const barsHtml = dims.map(([label, score]) => {
+    const bc = scoreBarColor(score);
+    return `
+      <span style="font-size:9px;letter-spacing:.06em;color:var(--text3);white-space:nowrap;">${label}</span>
+      <div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden;align-self:center;">
+        <div style="height:100%;width:${score}%;background:${bc};border-radius:2px;transition:width .4s ease;"></div>
+      </div>
+      <span style="font-family:var(--mono);font-size:10px;color:${bc};text-align:right;">${score}</span>`;
+  }).join('');
+
   document.getElementById('last-decision-text').innerHTML = `
-    <span style="color:${col};font-weight:700;font-family:var(--mono);">${data.decision}</span>
-    &nbsp; <span style="color:var(--text2);">${data.agent_id}</span>
-    &nbsp;·&nbsp; <span style="color:var(--cyan);font-family:var(--mono);">${data.action.toUpperCase()} ${data.resource}</span>
-    <br>
-    <span style="color:var(--text3);font-size:10px;">
-      Identity ${tb.identity_score} &nbsp;·&nbsp;
-      Delegation ${tb.delegation_score} &nbsp;·&nbsp;
-      Purpose ${tb.purpose_alignment_score} &nbsp;·&nbsp;
-      Behavioral ${tb.behavioral_score}
-    </span>
-    <br>
-    <span style="color:var(--text3);font-size:10px;font-style:italic;">${data.explanation || ''}</span>
+    <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:7px;flex-wrap:wrap;">
+      <span style="color:${col};font-weight:700;font-family:var(--mono);font-size:12px;">${esc(data.decision)}</span>
+      <span style="color:var(--text2);font-size:11px;">${esc(data.agent_id)}</span>
+      <span style="color:var(--text3);font-size:10px;">·</span>
+      <span style="color:var(--cyan);font-family:var(--mono);font-size:10px;">${esc(data.action.toUpperCase())} ${esc(data.resource)}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:58px 1fr 26px;gap:4px 6px;align-items:center;margin-bottom:7px;">
+      ${barsHtml}
+    </div>
+    <div style="font-size:10px;color:var(--text3);font-style:italic;line-height:1.45;">${esc(data.explanation || '')}</div>
   `;
 }
 
@@ -1077,7 +1103,17 @@ function matchesScenario(agent_id) {
   return agent_id.startsWith(prefix);
 }
 
+function updateScenarioCounts(agents) {
+  const d1 = agents.filter(a => a.agent_id.startsWith('langchain_')).length;
+  const d2 = agents.filter(a => a.agent_id.startsWith('multiagent_')).length;
+  const n1 = document.getElementById('sc-num-demo1');
+  const n2 = document.getElementById('sc-num-demo2');
+  if (n1) n1.textContent = d1 > 0 ? d1 : '01';
+  if (n2) n2.textContent = d2 > 0 ? d2 : '02';
+}
+
 function renderAgentPanel(agents) {
+  updateScenarioCounts(agents);
   const panel = document.getElementById('agents-panel');
   const filtered = agents.filter(a => matchesScenario(a.agent_id));
   if (!filtered.length) {
@@ -1094,7 +1130,7 @@ function renderAgentPanel(agents) {
       ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);margin-left:4px;">D${a.delegation_depth}</span>`
       : '';
     const chainLine = a.delegation_depth > 0 && a.chain
-      ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.chain}">${a.chain}</div>`
+      ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(a.chain)}">${esc(a.chain)}</div>`
       : '';
     const bl = _baselines[a.agent_id];
     const baselineLine = bl && bl.total_requests >= 10
@@ -1107,14 +1143,14 @@ function renderAgentPanel(agents) {
           : '');
     return `
       <div class="agent-card ${isCrit?'critical':''} ${isSel?'selected':''}"
-           onclick="filterAgent('${a.agent_id}')">
+           onclick="filterAgent('${esc(a.agent_id)}')">
         <div class="ac-top">
           <span class="ac-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
-          <span class="ac-name" title="${a.name}">${a.agent_id}</span>
+          <span class="ac-name" title="${esc(a.name)}">${esc(a.agent_id)}</span>
           ${depthBadge}
         </div>
         ${chainLine}
-        <div class="ac-sub">${a.declared_purpose.slice(0,32)}…</div>
+        <div class="ac-sub">${esc(a.declared_purpose.slice(0,32))}…</div>
         <div class="ac-bar-wrap">
           <div class="ac-bar-track">
             <div class="ac-bar-fill" style="width:${score}%;background:${barCol}"></div>
@@ -1246,7 +1282,7 @@ async function deletePolicy(id) {
 
 async function refreshPolicies() {
   try {
-    const r = await fetch(`${API}/policies`);
+    const r = await fetch(`${API}/policies`, { headers: API_HEADERS });
     const ps = await r.json();
     renderPolicies(ps);
   } catch(e) {}
@@ -1304,15 +1340,15 @@ async function openModal(filter) {
         const ts    = new Date(row.timestamp*1000).toLocaleTimeString();
         return `<div class="modal-flag-row">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
-            <span style="color:${col};font-family:var(--mono);font-size:10px;font-weight:700;">${row.decision}</span>
-            <span style="font-family:var(--mono);font-size:11px;font-weight:600;">${row.agent_id}</span>
-            <span style="font-family:var(--mono);font-size:10px;color:var(--cyan);">${row.action} ${row.resource}</span>
-            <span style="color:var(--text3);font-size:10px;margin-left:auto;">${ts}</span>
+            <span style="color:${col};font-family:var(--mono);font-size:10px;font-weight:700;">${esc(row.decision)}</span>
+            <span style="font-family:var(--mono);font-size:11px;font-weight:600;">${esc(row.agent_id)}</span>
+            <span style="font-family:var(--mono);font-size:10px;color:var(--cyan);">${esc(row.action)} ${esc(row.resource)}</span>
+            <span style="color:var(--text3);font-size:10px;margin-left:auto;">${esc(ts)}</span>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">
-            ${flags.map(f=>`<span style="font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:2px;background:rgba(255,59,92,.1);color:var(--red);border:1px solid rgba(255,59,92,.2);">${f}</span>`).join('')}
+            ${flags.map(f=>`<span style="font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:2px;background:rgba(255,59,92,.1);color:var(--red);border:1px solid rgba(255,59,92,.2);">${esc(f)}</span>`).join('')}
           </div>
-          <div style="font-size:10px;color:var(--text3);font-style:italic;">${row.explanation||''}</div>
+          <div style="font-size:10px;color:var(--text3);font-style:italic;">${esc(row.explanation||'')}</div>
         </div>`;
       }).join('');
     } else {
@@ -1323,12 +1359,12 @@ async function openModal(filter) {
           const ts  = new Date(row.timestamp*1000).toLocaleTimeString();
           return `<div class="modal-row">
             <span>
-              <span style="color:${col};font-family:var(--mono);font-size:10px;font-weight:700;">${row.decision}</span>
-              <span style="display:block;color:var(--text3);font-size:10px;">${ts}</span>
-              <span style="display:block;color:var(--text3);font-family:var(--mono);font-size:9px;">${row.action} &rarr;</span>
+              <span style="color:${col};font-family:var(--mono);font-size:10px;font-weight:700;">${esc(row.decision)}</span>
+              <span style="display:block;color:var(--text3);font-size:10px;">${esc(ts)}</span>
+              <span style="display:block;color:var(--text3);font-family:var(--mono);font-size:9px;">${esc(row.action)} &rarr;</span>
             </span>
-            <span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--cyan);">${row.agent_id}</span>
-            <span style="font-size:11px;color:var(--text2);font-style:italic;">${row.explanation||'—'}</span>
+            <span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--cyan);">${esc(row.agent_id)}</span>
+            <span style="font-size:11px;color:var(--text2);font-style:italic;">${esc(row.explanation||'—')}</span>
             <span style="font-family:var(--mono);font-size:14px;font-weight:700;color:${col};">${row.trust_score}</span>
           </div>`;
         }).join('');
