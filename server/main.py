@@ -576,7 +576,13 @@ async def dashboard():
         "dashboard", "index.html"
     )
     with open(dashboard_path, "r", encoding="utf-8") as f:
-        return f.read()
+        html = f.read()
+    # Inject the API key so the dashboard authenticates automatically
+    key = _get_api_key()
+    if key:
+        inject = f"<script>localStorage.setItem('agentgate_key',{repr(key)});</script>"
+        html = html.replace("</head>", inject + "\n</head>", 1)
+    return html
 
 
 if __name__ == "__main__":
