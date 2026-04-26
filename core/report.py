@@ -43,7 +43,26 @@ def _decision_color(decision: str) -> tuple:
     return {"PERMIT": C_GREEN, "DENY": C_RED, "ESCALATE": C_ORANGE, "PENDING": C_CYAN}.get(decision, C_TEXT2)
 
 
+_UNICODE_MAP = str.maketrans({
+    "—": "--",   # em dash
+    "–": "-",    # en dash
+    "‘": "'",    # left single quote
+    "’": "'",    # right single quote
+    "“": '"',    # left double quote
+    "”": '"',    # right double quote
+    "…": "...",  # ellipsis
+    "→": "->",   # right arrow
+    "←": "<-",   # left arrow
+    "·": ".",    # middle dot
+})
+
+def _safe(s: str) -> str:
+    """Replace characters outside latin-1 range so fpdf Helvetica doesn't crash."""
+    s = s.translate(_UNICODE_MAP)
+    return s.encode("latin-1", errors="replace").decode("latin-1")
+
 def _truncate(s: str, n: int) -> str:
+    s = _safe(s)
     return s if len(s) <= n else s[:n - 1] + "..."
 
 
@@ -296,7 +315,7 @@ def _threat_incidents(pdf: AgentGatePDF, rows: list[dict]):
         pdf.set_xy(17, pdf.get_y())
         pdf.set_text_color(*C_RED)
         pdf.set_font("Helvetica", "", 7)
-        pdf.cell(269, 4.5, "  [!]  " + "   .   ".join(flags), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(269, 4.5, _safe("  [!]  " + "   .   ".join(flags)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
         # Explanation
         expl = r.get("explanation", "")
