@@ -9,19 +9,25 @@ Three agents, three attack scenarios:
 """
 
 import httpx
+import os
 import time
 import uuid
 from rich.console import Console
 from rich.table import Table
 from rich import box
+from dotenv import load_dotenv
+
+load_dotenv()
 
 console = Console()
 
-AGENTGATE_URL = "http://localhost:8000"
+AGENTGATE_URL = os.getenv("AGENTGATE_URL", "http://localhost:8000")
+_API_KEY = os.getenv("AGENTGATE_API_KEY", "")
+_HEADERS = {"X-API-Key": _API_KEY} if _API_KEY else {}
 
 
 def _register(agent_data: dict) -> str:
-    r = httpx.post(f"{AGENTGATE_URL}/agents/register", json=agent_data)
+    r = httpx.post(f"{AGENTGATE_URL}/agents/register", json=agent_data, headers=_HEADERS)
     r.raise_for_status()
     return r.json()["token"]
 
@@ -35,7 +41,7 @@ def _authorize(agent_id: str, token: str, action: str, resource: str, justificat
         "justification": justification,
         "request_id": str(uuid.uuid4()),
     }
-    r = httpx.post(f"{AGENTGATE_URL}/authorize", json=payload)
+    r = httpx.post(f"{AGENTGATE_URL}/authorize", json=payload, headers=_HEADERS)
     r.raise_for_status()
     return r.json()
 
