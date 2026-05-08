@@ -39,8 +39,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ElamOlame31/agentgate"
-Documentation = "https://agentgate.dev/docs"
+Homepage = "https://github.com/ElamOlame31/agentgate-public"
+Documentation = "https://github.com/ElamOlame31/agentgate-public#readme"
 
 [tool.setuptools.packages.find]
 where = ["."]
