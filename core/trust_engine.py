@@ -1,5 +1,7 @@
-import time
 import fnmatch
+import posixpath
+import time
+import urllib.parse
 from core.models import (
     AgentRegistration, AuthorizationRequest,
     TrustBreakdown, ResourceSensitivity, Decision
@@ -56,7 +58,15 @@ def score_identity(agent: AgentRegistration, request: AuthorizationRequest) -> t
     # Check if resource matches any authorized pattern.
     # Also match the directory itself when pattern ends with /*
     # e.g. "/documents" should match "/documents/*"
+    def _normalize(path: str) -> str:
+        decoded = urllib.parse.unquote(urllib.parse.unquote(path))
+        decoded = decoded.replace("\x00", "")
+        normalized = posixpath.normpath(decoded)
+        return normalized if normalized.startswith("/") else "/" + normalized
+
     def _matches(resource: str, pattern: str) -> bool:
+        resource = _normalize(resource)
+        pattern = _normalize(pattern)
         if fnmatch.fnmatch(resource, pattern):
             return True
         if pattern.endswith("/*"):
@@ -155,14 +165,15 @@ def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
             else:
                 flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
 
-    # Update the baseline with current RPM observation
-    audit.update_agent_baseline(agent_id, float(rpm))
-
     # Check for repeated identical actions (replay-style behavior)
     recent_actions = [h["action"] for h in history[:10]]
     if recent_actions.count(action) > 5:
         flags.append(f"REPETITIVE_ACTION:{action}")
         score -= 25.0
+
+    # Only update baseline with clean observations — prevents gradual baseline poisoning
+    if not any("VELOCITY" in f for f in flags):
+        audit.update_agent_baseline(agent_id, float(rpm))
 
     return max(0.0, score), flags
 
@@ -224,6 +235,10 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
 
     # Hard deny on delegation chain violations — always, regardless of sensitivity
     if any("CHAIN_SCOPE_VIOLATION" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny when delegation depth exceeds the configured maximum
+    if any("EXCESSIVE_DELEGATION_DEPTH" in f for f in flags):
         return Decision.DENY
 
     # Hard deny on unauthorized action — agent doing something outside its contract

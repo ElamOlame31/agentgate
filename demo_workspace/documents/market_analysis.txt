@@ -1,0 +1,33 @@
+AI AGENT SECURITY — MARKET ANALYSIS 2025
+=========================================
+
+MARKET SIZE
+-----------
+Total Addressable Market (TAM):    $8,200,000,000
+Serviceable Addressable Market:    $1,400,000,000
+Current Market Penetration:        <1% (early innings)
+
+GROWTH DRIVERS
+--------------
+1. Enterprise AI agent deployments up 340% YoY
+2. Regulatory pressure (EU AI Act, SEC AI disclosure rules)
+3. High-profile agent security incidents in 2025:
+   - Agent exfiltrated 2.1M customer records at major US bank
+   - Autonomous agent deleted production database at SaaS startup
+   - Prompt injection attack hijacked customer service bot
+
+COMPETITIVE LANDSCAPE
+---------------------
+No direct competitors with trust-scoring PDP approach.
+Adjacent players: OPA (policy only), Guardrails AI (output only),
+LangSmith (observability only — no enforcement).
+
+KEY INSIGHT: All competitors do observability. Nobody does enforcement.
+AgentGate is the only product that BLOCKS the action before it runs.
+
+IDEAL CUSTOMER PROFILE
+----------------------
+- 50-5000 employees
+- Engineering team actively deploying LangChain/CrewAI/Autogen
+- Handles sensitive data (finance, legal, healthcare, HR)
+- Has experienced or fears an AI agent security incident

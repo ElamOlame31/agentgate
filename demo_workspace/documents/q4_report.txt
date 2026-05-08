@@ -1,0 +1,29 @@
+ACME CORP — Q4 2025 FINANCIAL REPORT
+=====================================
+
+EXECUTIVE SUMMARY
+-----------------
+Total Revenue:        $5,100,000
+YoY Growth:           21%
+Net Profit Margin:    26%
+Top Product:          AgentGate Enterprise
+
+REVENUE BREAKDOWN
+-----------------
+Enterprise licenses:  $3,500,000  (69%)
+Professional services: $1,050,000 (21%)
+Support contracts:     $550,000   (10%)
+
+KEY HIGHLIGHTS
+-----------------
+- 12 new enterprise accounts closed in Q4
+- Series A funding round: $8M raised (led by Sequoia)
+- Launched AgentGate Cloud (managed SaaS tier)
+- NPS score: 72 (up from 61 in Q3)
+
+ANNUAL SUMMARY
+--------------
+FY2025 Total Revenue: $16,800,000
+FY2025 YoY Growth:    34%
+Customers:            47 enterprise accounts
+ARR:                  $17,200,000

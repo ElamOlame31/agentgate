@@ -5,11 +5,22 @@ from core.models import TrustBreakdown, Decision
 _client: anthropic.Anthropic | None = None
 
 
+def _explainer_enabled() -> bool:
+    """Set AGENTGATE_EXPLAINER_ENABLED=false to use local fallback only (data residency)."""
+    return os.getenv("AGENTGATE_EXPLAINER_ENABLED", "true").lower() != "false"
+
+
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
         _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     return _client
+
+
+def _sanitize(value: str, max_len: int = 200) -> str:
+    """Strip newlines and control chars so agent-controlled data can't inject prompt instructions."""
+    sanitized = value.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    return sanitized[:max_len]
 
 
 def generate_explanation(
@@ -20,10 +31,17 @@ def generate_explanation(
     decision: Decision,
     flags: list[str],
 ) -> str:
+    if not _explainer_enabled():
+        raise Exception("Cloud explainer disabled via AGENTGATE_EXPLAINER_ENABLED=false")
+
+    safe_name = _sanitize(agent_name, 128)
+    safe_action = _sanitize(action, 128)
+    safe_resource = _sanitize(resource, 256)
+
     prompt = f"""You are an AI security auditor. Generate a ONE sentence explanation (max 25 words) for this authorization decision.
 
-Agent: {agent_name}
-Requested: {action} on {resource}
+Agent: {safe_name}
+Requested: {safe_action} on {safe_resource}
 Decision: {decision.value}
 Trust Score: {breakdown.final_score}/100 (threshold: {breakdown.threshold_required})
 Score breakdown:

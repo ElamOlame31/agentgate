@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "Write-Output '{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"REMINDER: If significant work was done this session, update PROGRESS_LOG.md in the project root with a summary of what was accomplished, following the existing format (date, section heading, bullet points of what was built/fixed/changed).\"}}'",
+            "statusMessage": "Checking progress log..."
+          }
+        ]
+      }
+    ]
+  }
+}

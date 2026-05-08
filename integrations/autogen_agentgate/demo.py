@@ -23,7 +23,7 @@ from autogen_core.models import UserMessage
 from integrations.autogen_agentgate import AgentGateToolkit
 
 AGENTGATE_URL = "http://localhost:8000"
-API_KEY = os.getenv("AGENTGATE_API_KEY", "ag-secret-2026")
+API_KEY = os.getenv("AGENTGATE_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY") or ""
 
 # ── Simulated tools ───────────────────────────────────────────────────────────

@@ -11,3 +11,7 @@ build/
 .DS_Store
 python
 *.zip
+*.log
+PROGRESS_LOG.md
+PROGRESS_LOG.tex
+sdk_test.py

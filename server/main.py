@@ -4,15 +4,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hmac
 import json
+import posixpath
 import re
 import time
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, Query
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -30,9 +32,12 @@ async def require_api_key(request: Request):
     api_key = _get_api_key()
     if api_key is None:
         return  # auth disabled — no key configured
-    provided = request.headers.get("X-API-Key", "")
+    # Accept from header (API clients) or query param (WebSocket / ntfy.sh callbacks)
+    provided = request.headers.get("X-API-Key", "") or request.query_params.get("key", "")
     if not hmac.compare_digest(provided, api_key):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key. Set X-API-Key header.")
+        client = request.client.host if request.client else "unknown"
+        print(f"[AgentGate] AUTH FAIL — {request.method} {request.url.path} from {client}", flush=True)
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
 from core.models import (
@@ -54,13 +59,20 @@ from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_D
 _agents: dict[str, AgentRegistration] = {}
 
 
+_MAX_WS_CONNECTIONS = 100
+
+
 class ConnectionManager:
     def __init__(self):
         self._connections: list[WebSocket] = []
 
-    async def connect(self, ws: WebSocket):
+    async def connect(self, ws: WebSocket) -> bool:
+        if len(self._connections) >= _MAX_WS_CONNECTIONS:
+            await ws.close(code=1008, reason="Server at capacity")
+            return False
         await ws.accept()
         self._connections.append(ws)
+        return True
 
     def disconnect(self, ws: WebSocket):
         if ws in self._connections:
@@ -84,13 +96,24 @@ async def _ws_broadcast(data: dict):
     await manager.broadcast(data)
 
 
+async def _periodic_cleanup():
+    import asyncio
+    while True:
+        await asyncio.sleep(3600)
+        audit.cleanup_old_history(max_age_seconds=3600.0)
+        audit.cleanup_old_audit_log()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     audit.init_db()
     audit.cleanup_old_history(max_age_seconds=3600.0)
+    audit.cleanup_old_audit_log()
     init_policy_table()
     _agents.update(audit.load_all_agents())
     approvals.set_broadcast_callback(_ws_broadcast)
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
     if _get_api_key():
         print("[AgentGate] Auth ON  — API key required on all endpoints")
     else:
@@ -100,13 +123,17 @@ async def lifespan(app: FastAPI):
     else:
         print("[AgentGate] Alerts OFF — set AGENTGATE_ALERT_TOPIC in .env to enable")
     yield
+    cleanup_task.cancel()
 
 
 limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(title="AgentGate PDP", version="0.2.0", lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, lambda req, exc: HTTPException(status_code=429, detail="Rate limit exceeded"))
+app.add_exception_handler(
+    RateLimitExceeded,
+    lambda req, exc: JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"}),
+)
 app.add_middleware(SlowAPIMiddleware)
 
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv("AGENTGATE_CORS_ORIGINS", "http://localhost:8000").split(",") if o.strip()]
@@ -117,6 +144,29 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
+
+
+_CSP = (
+    "default-src 'self'; "
+    "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+    "font-src https://fonts.gstatic.com; "
+    "connect-src 'self' ws: wss:; "
+    "script-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "frame-ancestors 'none'"
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "0"
+    response.headers["Content-Security-Policy"] = _CSP
+    response.headers["Server"] = "AgentGate"
+    return response
 
 
 # ── Agent Registration ──────────────────────────────────────────────────────
@@ -132,6 +182,8 @@ async def register_agent(request: Request, reg: AgentRegistration):
         raise HTTPException(status_code=400, detail="agent_id must be 3-64 chars, alphanumeric/hyphens/underscores only")
     if reg.agent_id.lower() in _RESERVED_IDS:
         raise HTTPException(status_code=400, detail=f"agent_id '{reg.agent_id}' is reserved")
+    if reg.agent_id in _agents:
+        raise HTTPException(status_code=409, detail=f"Agent '{reg.agent_id}' already registered")
     if not reg.token:
         reg.token = str(uuid.uuid4())
     _agents[reg.agent_id] = reg
@@ -141,7 +193,8 @@ async def register_agent(request: Request, reg: AgentRegistration):
 
 
 @app.get("/agents", response_model=list, dependencies=[Depends(require_api_key)])
-async def list_agents():
+@limiter.limit("60/minute")
+async def list_agents(request: Request):
     return _agent_list()
 
 
@@ -149,21 +202,31 @@ class DelegationRequest(BaseModel):
     parent_agent_id: str
     parent_token: str
     child_agent_id: str
-    child_name: str
-    child_declared_purpose: str
-    child_resources: list[str]
-    child_actions: list[str]
-    child_declared_purpose_detail: str = ""
+    child_name: str = Field(max_length=128)
+    child_declared_purpose: str = Field(max_length=500)
+    child_resources: list[str] = Field(max_length=100)
+    child_actions: list[str] = Field(max_length=50)
 
 
 @app.post("/agents/delegate", response_model=dict, dependencies=[Depends(require_api_key)])
-async def delegate_agent(req: DelegationRequest):
+@limiter.limit("10/minute")
+async def delegate_agent(request: Request, req: DelegationRequest):
     if req.parent_agent_id not in _agents:
         raise HTTPException(status_code=404, detail="Parent agent not found")
 
+    if req.parent_agent_id == req.child_agent_id:
+        raise HTTPException(status_code=400, detail="Cannot delegate to self")
+
+    if not _AGENT_ID_RE.match(req.child_agent_id):
+        raise HTTPException(status_code=400, detail="child_agent_id must be 3-64 chars, alphanumeric/hyphens/underscores only")
+    if req.child_agent_id.lower() in _RESERVED_IDS:
+        raise HTTPException(status_code=400, detail=f"child_agent_id '{req.child_agent_id}' is reserved")
+    if req.child_agent_id in _agents:
+        raise HTTPException(status_code=409, detail=f"Agent '{req.child_agent_id}' already exists")
+
     parent = _agents[req.parent_agent_id]
 
-    if parent.token and req.parent_token != parent.token:
+    if parent.token and not hmac.compare_digest(req.parent_token, parent.token):
         raise HTTPException(status_code=401, detail="Invalid parent agent token")
 
     if parent.delegation_depth >= MAX_DELEGATION_DEPTH:
@@ -208,7 +271,8 @@ async def delegate_agent(req: DelegationRequest):
 
 
 @app.delete("/agents/{agent_id}", dependencies=[Depends(require_api_key)])
-async def deregister_agent(agent_id: str):
+@limiter.limit("20/minute")
+async def deregister_agent(request: Request, agent_id: str):
     if agent_id not in _agents:
         raise HTTPException(status_code=404, detail="Agent not found")
     del _agents[agent_id]
@@ -232,11 +296,45 @@ def _agent_list():
 
 # ── Authorization (PDP) ─────────────────────────────────────────────────────
 
+def _normalize_resource(resource: str) -> str:
+    """
+    Normalize a resource path before policy evaluation.
+
+    Prevents scope bypass via URL-encoded traversal sequences like
+    /reports/%2e%2e/confidential/ that evade the literal '..' check but
+    resolve to an out-of-scope path after decoding.
+
+    Steps:
+      1. URL-decode (%2e%2e → .., %2F → /, etc.) — handles single and double encoding
+      2. Strip null bytes
+      3. Normalize path with posixpath (resolve .., collapse //, etc.)
+      4. Guarantee a leading /
+    """
+    # Double-decode to catch %252e%252e → %2e%2e → ..
+    decoded = urllib.parse.unquote(urllib.parse.unquote(resource))
+    # Strip null bytes
+    decoded = decoded.replace("\x00", "")
+    # Normalize (resolves .., //, ./ etc.) — posixpath is OS-independent
+    normalized = posixpath.normpath(decoded)
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    return normalized
+
+
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("200/minute")
 async def authorize(request: Request, body: AuthorizationRequest):
     if not body.request_id:
         body.request_id = str(uuid.uuid4())
+
+    # Reject traversal attempts before normalization — check the decoded raw input
+    # so encoded variants (%2e%2e, %252e%252e, etc.) are all caught.
+    _raw_decoded = urllib.parse.unquote(urllib.parse.unquote(body.resource)).replace("\x00", "")
+    if ".." in _raw_decoded:
+        raise HTTPException(status_code=400, detail="Resource path traversal not allowed")
+
+    # Normalize resource path — resolves URL-encoded sequences, collapses //, etc.
+    body.resource = _normalize_resource(body.resource)
 
     # Unknown agent → deny immediately
     if body.agent_id not in _agents:
@@ -447,7 +545,7 @@ async def add_policy(body: PolicyRequest):
     return policy
 
 
-@app.get("/policies", response_model=list[Policy])
+@app.get("/policies", response_model=list[Policy], dependencies=[Depends(require_api_key)])
 async def list_policies():
     return get_all_policies()
 
@@ -463,28 +561,32 @@ async def remove_policy(policy_id: str):
 # ── Human Approval Endpoints ────────────────────────────────────────────────
 
 @app.get("/decisions/pending", dependencies=[Depends(require_api_key)])
-async def list_pending():
+@limiter.limit("60/minute")
+async def list_pending(request: Request):
     return approvals.get_all_pending()
 
 
-@app.get("/decisions/{decision_id}")
-async def get_decision(decision_id: str):
+@app.get("/decisions/{decision_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("60/minute")
+async def get_decision(request: Request, decision_id: str):
     a = approvals.get_pending(decision_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Decision not found")
     return a.to_dict()
 
 
-@app.post("/decisions/{decision_id}/approve")
-async def approve_decision(decision_id: str):
+@app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+async def approve_decision(request: Request, decision_id: str):
     if not approvals.approve(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found or already resolved")
     print(f"[AgentGate] Human APPROVED {decision_id}", flush=True)
     return {"status": "approved", "decision_id": decision_id}
 
 
-@app.post("/decisions/{decision_id}/deny")
-async def deny_decision(decision_id: str):
+@app.post("/decisions/{decision_id}/deny", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+async def deny_decision(request: Request, decision_id: str):
     if not approvals.deny(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found or already resolved")
     print(f"[AgentGate] Human DENIED {decision_id}", flush=True)
@@ -494,23 +596,27 @@ async def deny_decision(decision_id: str):
 # ── Audit & Stats ───────────────────────────────────────────────────────────
 
 @app.get("/audit/recent", dependencies=[Depends(require_api_key)])
-async def recent_audit(limit: int = 50):
+async def recent_audit(limit: int = Query(default=50, ge=1, le=1000)):
     return audit.get_recent_decisions(limit)
 
 
 @app.get("/audit/agent/{agent_id}", dependencies=[Depends(require_api_key)])
-async def agent_audit(agent_id: str, limit: int = 100):
+async def agent_audit(agent_id: str, limit: int = Query(default=100, ge=1, le=1000)):
     return audit.get_agent_decisions(agent_id, limit)
 
 
-@app.get("/audit/stats")
+@app.get("/audit/stats", dependencies=[Depends(require_api_key)])
 async def stats():
     return audit.get_stats()
 
 
+_MAX_EXPORT_DAYS = 90
+_MAX_EXPORT_ROWS = 10_000
+
+
 @app.get("/audit/export", dependencies=[Depends(require_api_key)])
 async def export_audit(
-    format: str = Query("pdf", regex="^(pdf|csv)$"),
+    format: str = Query("pdf", pattern="^(pdf|csv)$"),
     from_ts: float = Query(None, description="Start Unix timestamp (default: 30 days ago)"),
     to_ts:   float = Query(None, description="End Unix timestamp (default: now)"),
 ):
@@ -519,7 +625,20 @@ async def export_audit(
     to_ts   = to_ts   or now
     from_ts = from_ts or (now - 30 * 86400)
 
+    if to_ts <= from_ts:
+        raise HTTPException(status_code=400, detail="to_ts must be after from_ts")
+    if (to_ts - from_ts) > _MAX_EXPORT_DAYS * 86400:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Date range too large — maximum {_MAX_EXPORT_DAYS} days per export"
+        )
+
     rows  = audit.get_decisions_in_range(from_ts, to_ts)
+    if len(rows) > _MAX_EXPORT_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query returned {len(rows)} rows — maximum {_MAX_EXPORT_ROWS} per export; narrow the date range"
+        )
     stats = audit.get_stats()
 
     if format == "csv":
@@ -541,12 +660,14 @@ async def export_audit(
 
 
 @app.get("/audit/baselines", dependencies=[Depends(require_api_key)])
-async def all_baselines():
+@limiter.limit("30/minute")
+async def all_baselines(request: Request):
     return audit.get_all_baselines()
 
 
 @app.get("/audit/baselines/{agent_id}", dependencies=[Depends(require_api_key)])
-async def agent_baseline(agent_id: str):
+@limiter.limit("30/minute")
+async def agent_baseline(request: Request, agent_id: str):
     b = audit.get_agent_baseline(agent_id)
     if b is None:
         raise HTTPException(status_code=404, detail="No baseline data for this agent yet")
@@ -556,8 +677,14 @@ async def agent_baseline(agent_id: str):
 # ── WebSocket ───────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await manager.connect(ws)
+async def websocket_endpoint(ws: WebSocket, key: str = Query(default="")):
+    api_key = _get_api_key()
+    if api_key is not None and not hmac.compare_digest(key, api_key):
+        await ws.accept()
+        await ws.close(code=4001)
+        return
+    if not await manager.connect(ws):
+        return
     try:
         await ws.send_text(json.dumps({"type": "stats", "data": audit.get_stats()}))
         await ws.send_text(json.dumps({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]}))
@@ -577,11 +704,6 @@ async def dashboard():
     )
     with open(dashboard_path, "r", encoding="utf-8") as f:
         html = f.read()
-    # Inject the API key so the dashboard authenticates automatically
-    key = _get_api_key()
-    if key:
-        inject = f"<script>localStorage.setItem('agentgate_key',{repr(key)});</script>"
-        html = html.replace("</head>", inject + "\n</head>", 1)
     return html
 
 

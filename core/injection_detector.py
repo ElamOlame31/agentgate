@@ -82,16 +82,24 @@ def _get_redirect_embeddings():
 def _semantic_injection_score(content: str) -> float:
     """
     Returns 0-1 similarity between content and known injection phrases.
-    Uses cosine similarity via sentence-transformers (already loaded).
+    Scans beginning, middle, and end of content so injections past char 512
+    are not missed by the 512-char model input limit.
     """
     try:
         import numpy as np
         model = _get_model()
-        content_embedding = model.encode([content[:512]], convert_to_numpy=True)
+        chunk_size = 512
+        chunks = [content[:chunk_size]]
+        if len(content) > chunk_size:
+            mid = len(content) // 2
+            chunks.append(content[mid: mid + chunk_size])
+        if len(content) > chunk_size * 2:
+            chunks.append(content[-chunk_size:])
+
+        content_embeddings = model.encode(chunks, convert_to_numpy=True)
         redirect_embeddings = _get_redirect_embeddings()
 
-        # Cosine similarity
-        content_norm = content_embedding / (np.linalg.norm(content_embedding, axis=1, keepdims=True) + 1e-9)
+        content_norm = content_embeddings / (np.linalg.norm(content_embeddings, axis=1, keepdims=True) + 1e-9)
         redirect_norm = redirect_embeddings / (np.linalg.norm(redirect_embeddings, axis=1, keepdims=True) + 1e-9)
         similarities = content_norm @ redirect_norm.T
         return float(np.max(similarities))

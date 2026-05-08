@@ -135,3 +135,61 @@ def test_agentgate_unavailable_when_server_down():
         gate.authorize("read", "/documents/report.pdf")
 
     assert "19999" in str(exc_info.value)
+
+
+# ── Test 6: Path traversal bypass prevention ──────────────────────────────────
+
+def test_path_traversal_url_encoded_bypass_is_blocked():
+    """
+    URL-encoded traversal sequences must not bypass scope enforcement.
+
+    Without normalization, /reports/%2e%2e/confidential/salary.xlsx passes
+    the literal '..' check AND matches fnmatch '/reports/*' — giving an agent
+    access to /confidential/ even though it's only authorized for /reports/*.
+    """
+    from server.main import _normalize_resource
+
+    agent = make_agent(resources=["/reports/*"])
+
+    traversal_variants = [
+        "/reports/%2e%2e/confidential/salary.xlsx",      # %2e%2e
+        "/reports/.%2e/confidential/salary.xlsx",        # .%2e
+        "/reports/%2e./confidential/salary.xlsx",        # %2e.
+        "/reports/%252e%252e/confidential/salary.xlsx",  # double-encoded
+        "/reports///../confidential/salary.xlsx",        # double slash
+    ]
+
+    for raw in traversal_variants:
+        normalized = _normalize_resource(raw)
+        request = make_request(resource=normalized)
+        breakdown, flags = compute_trust(agent, request, {})
+        decision = make_decision(breakdown, flags)
+
+        assert decision == Decision.DENY, (
+            f"PATH TRAVERSAL BYPASS: '{raw}' normalized to '{normalized}' "
+            f"was {decision} instead of DENY. flags={flags}"
+        )
+        assert any("RESOURCE_OUT_OF_SCOPE" in f for f in flags), (
+            f"Expected RESOURCE_OUT_OF_SCOPE flag for '{raw}', got: {flags}"
+        )
+
+
+def test_path_traversal_legitimate_access_still_permitted():
+    """Normalization must not break legitimate resource access."""
+    agent = make_agent(resources=["/reports/*"])
+
+    legit_resources = [
+        "/reports/q3.pdf",
+        "/reports/2025/q4.pdf",
+        "/reports/annual_summary.xlsx",
+    ]
+
+    for resource in legit_resources:
+        request = make_request(resource=resource)
+        breakdown, flags = compute_trust(agent, request, {})
+        decision = make_decision(breakdown, flags)
+
+        assert decision == Decision.PERMIT, (
+            f"Legitimate resource '{resource}' was incorrectly {decision}. "
+            f"flags={flags}"
+        )

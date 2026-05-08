@@ -63,7 +63,7 @@ def _safe(s: str) -> str:
 
 def _truncate(s: str, n: int) -> str:
     s = _safe(s)
-    return s if len(s) <= n else s[:n - 1] + "..."
+    return s if len(s) <= n else s[:max(0, n - 3)] + "..."
 
 
 class AgentGatePDF(FPDF):
@@ -164,12 +164,15 @@ def _cover_page(pdf: AgentGatePDF, stats: dict, period_from: str, period_to: str
         pdf.set_font("Helvetica", "", 6.5)
         pdf.cell(bw, 5, label, align="C")
 
-    # Classification footer
+    # Classification footer — pin to bottom of cover; disable auto-break so the
+    # cell at y=190 doesn't spill onto a new page (threshold is 210-14=196).
+    pdf.set_auto_page_break(auto=False)
     pdf.set_xy(18, 190)
     pdf.set_fill_color(*C_RED)
     pdf.set_text_color(*C_WHITE)
     pdf.set_font("Helvetica", "B", 8)
     pdf.cell(263, 7, "  CONFIDENTIAL  -  FOR INTERNAL AUDIT USE ONLY", fill=True)
+    pdf.set_auto_page_break(auto=True, margin=14)
 
 
 def _section_header(pdf: AgentGatePDF, title: str):
@@ -233,7 +236,8 @@ def _executive_summary(pdf: AgentGatePDF, rows: list[dict], stats: dict):
         pdf.cell(col_w[i], 7, h, fill=True)
     pdf.ln(7)
 
-    for idx, (aid, cnts) in enumerate(sorted(agents_seen.items())):
+    agents_list = sorted(agents_seen.items())
+    for idx, (aid, cnts) in enumerate(agents_list):
         fill_color = C_DARK_ROW if idx % 2 == 0 else C_ALT_ROW
         pdf.set_fill_color(*fill_color)
         pdf.set_text_color(*C_TEXT)
@@ -258,7 +262,9 @@ def _executive_summary(pdf: AgentGatePDF, rows: list[dict], stats: dict):
             pdf.set_fill_color(*fill_color)
             pdf.cell(col_w[i], 6, v, fill=True)
         pdf.ln(6)
-        if pdf.get_y() > 185:
+        # Only open a continuation page when there are more rows to draw;
+        # an unconditional add_page after the last row would leave a blank page.
+        if pdf.get_y() > 185 and idx < len(agents_list) - 1:
             pdf.add_page()
             pdf.set_fill_color(*C_BG)
             pdf.rect(0, 0, 297, 210, style="F")
@@ -406,6 +412,14 @@ def generate_pdf(rows: list[dict], stats: dict, from_ts: float, to_ts: float) ->
     return bytes(pdf.output())
 
 
+def _csv_safe(value: str) -> str:
+    """Prefix cells that start with formula chars to prevent spreadsheet injection."""
+    s = str(value)
+    if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + s
+    return s
+
+
 def generate_csv(rows: list[dict]) -> str:
     buf = io.StringIO()
     fieldnames = [
@@ -419,9 +433,9 @@ def generate_csv(rows: list[dict]) -> str:
     for r in rows:
         writer.writerow({
             "timestamp_utc": _ts(r["timestamp"]),
-            "agent_id": r["agent_id"],
-            "action": r["action"],
-            "resource": r["resource"],
+            "agent_id": _csv_safe(r["agent_id"]),
+            "action": _csv_safe(r["action"]),
+            "resource": _csv_safe(r["resource"]),
             "decision": r["decision"],
             "trust_score": r["trust_score"],
             "identity_score": r.get("identity_score", ""),
@@ -430,6 +444,6 @@ def generate_csv(rows: list[dict]) -> str:
             "behavioral_score": r.get("behavioral_score", ""),
             "resource_sensitivity": r.get("resource_sensitivity", ""),
             "attack_flags": r.get("attack_flags", "[]"),
-            "explanation": r.get("explanation", ""),
+            "explanation": _csv_safe(r.get("explanation", "")),
         })
     return buf.getvalue()

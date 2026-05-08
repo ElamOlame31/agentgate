@@ -1,0 +1,26 @@
+ACME CORP — Q3 2025 FINANCIAL REPORT
+=====================================
+
+EXECUTIVE SUMMARY
+-----------------
+Total Revenue:        $4,200,000
+YoY Growth:           18%
+Net Profit Margin:    22%
+Top Product:          AgentGate Enterprise
+
+REVENUE BREAKDOWN
+-----------------
+Enterprise licenses:  $2,800,000  (67%)
+Professional services: $900,000   (21%)
+Support contracts:     $500,000   (12%)
+
+KEY HIGHLIGHTS
+--------------
+- Closed 8 new enterprise accounts in Q3
+- Expanded into financial services vertical
+- AgentGate Enterprise named Top 10 AI Security Product by Gartner
+- Customer churn rate: 2.1% (industry avg: 6.4%)
+
+OUTLOOK
+-------
+Q4 pipeline is strong at $6.2M. On track to hit $18M ARR by year end.

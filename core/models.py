@@ -20,12 +20,12 @@ class Decision(str, Enum):
 
 class AgentRegistration(BaseModel):
     agent_id: str
-    name: str
-    declared_purpose: str
-    authorized_resources: List[str]
-    authorized_actions: List[str]
+    name: str = Field(max_length=128)
+    declared_purpose: str = Field(max_length=500)
+    authorized_resources: List[str] = Field(max_length=100)
+    authorized_actions: List[str] = Field(max_length=50)
     delegated_by: Optional[str] = None
-    delegation_depth: int = 0
+    delegation_depth: int = Field(default=0, ge=0)
     scope_at_delegation: Optional[List[str]] = None
     token: Optional[str] = None
     token_expires_at: Optional[float] = None
@@ -35,9 +35,9 @@ class AgentRegistration(BaseModel):
 
 class AuthorizationRequest(BaseModel):
     agent_id: str
-    action: str
-    resource: str
-    justification: Optional[str] = ""
+    action: str = Field(max_length=128)
+    resource: str = Field(max_length=2048)
+    justification: Optional[str] = Field(default="", max_length=2000)
     token: Optional[str] = None
     request_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
@@ -45,7 +45,7 @@ class AuthorizationRequest(BaseModel):
 
 class ContentScanRequest(BaseModel):
     agent_id: str
-    content: str
+    content: str = Field(max_length=100_000)
     declared_purpose: Optional[str] = ""
 
 

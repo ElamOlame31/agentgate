@@ -62,10 +62,13 @@ def set_broadcast_callback(fn):
 
 
 def _auto_deny(request_id: str):
+    broadcast_data = None
     with _lock:
         approval = _store.get(request_id)
-    if approval and approval.status == "PENDING":
-        approval.resolve("DENIED")
+        if approval and approval.status == "PENDING":
+            approval.resolve("DENIED")
+            broadcast_data = approval.to_dict()
+    if broadcast_data:
         print(f"[AgentGate] Auto-denied pending approval {request_id} (90s timeout)", flush=True)
         if _broadcast_callback:
             import asyncio
@@ -73,7 +76,7 @@ def _auto_deny(request_id: str):
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.run_coroutine_threadsafe(
-                        _broadcast_callback({"type": "approval_resolved", "data": approval.to_dict()}),
+                        _broadcast_callback({"type": "approval_resolved", "data": broadcast_data}),
                         loop
                     )
             except Exception:
@@ -102,18 +105,20 @@ def get_all_pending() -> list:
 
 
 def approve(request_id: str) -> bool:
+    broadcast_data = None
     with _lock:
         approval = _store.get(request_id)
-    if not approval or approval.status != "PENDING":
-        return False
-    approval.resolve("APPROVED")
-    if _broadcast_callback:
+        if not approval or approval.status != "PENDING":
+            return False
+        approval.resolve("APPROVED")
+        broadcast_data = approval.to_dict()
+    if _broadcast_callback and broadcast_data:
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 asyncio.run_coroutine_threadsafe(
-                    _broadcast_callback({"type": "approval_resolved", "data": approval.to_dict()}),
+                    _broadcast_callback({"type": "approval_resolved", "data": broadcast_data}),
                     loop
                 )
         except Exception:
@@ -122,18 +127,20 @@ def approve(request_id: str) -> bool:
 
 
 def deny(request_id: str) -> bool:
+    broadcast_data = None
     with _lock:
         approval = _store.get(request_id)
-    if not approval or approval.status != "PENDING":
-        return False
-    approval.resolve("DENIED")
-    if _broadcast_callback:
+        if not approval or approval.status != "PENDING":
+            return False
+        approval.resolve("DENIED")
+        broadcast_data = approval.to_dict()
+    if _broadcast_callback and broadcast_data:
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 asyncio.run_coroutine_threadsafe(
-                    _broadcast_callback({"type": "approval_resolved", "data": approval.to_dict()}),
+                    _broadcast_callback({"type": "approval_resolved", "data": broadcast_data}),
                     loop
                 )
         except Exception:

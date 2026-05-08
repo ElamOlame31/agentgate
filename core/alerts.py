@@ -123,9 +123,11 @@ def fire_approval_request(request_id: str, agent_id: str, action: str,
         "Tags": "question,shield",
     }
     if public_url:
+        api_key = os.getenv("AGENTGATE_API_KEY", "").strip()
+        key_suffix = f"?key={api_key}" if api_key else ""
         headers["Actions"] = (
-            f"http, Approve, {public_url}/decisions/{request_id}/approve, method=POST, headers.ngrok-skip-browser-warning=true, clear=true; "
-            f"http, Deny, {public_url}/decisions/{request_id}/deny, method=POST, headers.ngrok-skip-browser-warning=true, clear=true"
+            f"http, Approve, {public_url}/decisions/{request_id}/approve{key_suffix}, method=POST, headers.ngrok-skip-browser-warning=true, clear=true; "
+            f"http, Deny, {public_url}/decisions/{request_id}/deny{key_suffix}, method=POST, headers.ngrok-skip-browser-warning=true, clear=true"
         )
 
     try:

@@ -230,6 +230,9 @@ def get_all_policies() -> list[Policy]:
     for r in rows:
         d = dict(r)
         d["time_invert"] = bool(d.get("time_invert", 0))
+        # Migrate old rows that predate the created_at column (NULL → now)
+        if d.get("created_at") is None:
+            d["created_at"] = time.time()
         policies.append(Policy(**d))
     return policies
 

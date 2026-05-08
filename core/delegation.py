@@ -23,7 +23,8 @@ def _pattern_covered_by(child: str, parent: str) -> bool:
         return True
     # /documents/public/* is covered by /documents/*
     if parent.endswith("/*") and child.endswith("/*"):
-        return child[:-2].startswith(parent[:-2])
+        parent_base = parent[:-2]
+        return child[:-2] == parent_base or child[:-2].startswith(parent_base + "/")
     # /documents/foo.pdf is covered by /documents/*
     if parent.endswith("/*"):
         base = parent[:-2]

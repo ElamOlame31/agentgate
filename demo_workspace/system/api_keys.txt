@@ -1,0 +1,15 @@
+ACME CORP — SYSTEM CREDENTIALS
+================================
+CLASSIFICATION: CRITICAL — DEVOPS ONLY
+
+PRODUCTION API KEYS
+--------------------
+STRIPE_SECRET_KEY=sk_live_51NxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxX
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+DATABASE_URL=postgresql://admin:Sup3rS3cr3tP@ss@prod-db.acme.internal:5432/acme_prod
+
+ROTATION SCHEDULE: Every 90 days. Next rotation: 2026-01-15.
+EMERGENCY CONTACT: devops@acme.com / +1-555-0199

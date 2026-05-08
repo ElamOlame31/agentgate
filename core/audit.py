@@ -55,8 +55,6 @@ def init_db():
         "token_expires_at": "NULL",
     }
     for col, default in _allowed_migrations.items():
-        if col not in _allowed_migrations:
-            continue
         try:
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
         except Exception:
@@ -168,7 +166,7 @@ def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> li
     return [dict(r) for r in rows]
 
 
-TOKEN_TTL = float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600)))
+TOKEN_TTL = max(60.0, float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600))))
 
 
 def save_agent(agent: AgentRegistration):
@@ -293,6 +291,16 @@ def cleanup_old_history(max_age_seconds: float = 3600.0):
     conn = sqlite3.connect(DB_PATH)
     cutoff = time.time() - max_age_seconds
     conn.execute("DELETE FROM request_history WHERE timestamp<?", (cutoff,))
+    conn.commit()
+    conn.close()
+
+
+def cleanup_old_audit_log(max_age_days: int = 90):
+    """Prune audit_log entries older than max_age_days to cap database size."""
+    days = max(1, int(os.getenv("AGENTGATE_AUDIT_RETENTION_DAYS", str(max_age_days))))
+    conn = sqlite3.connect(DB_PATH)
+    cutoff = time.time() - days * 86400
+    conn.execute("DELETE FROM audit_log WHERE timestamp<?", (cutoff,))
     conn.commit()
     conn.close()
 

@@ -1,0 +1,23 @@
+ACME CORP — CONFIDENTIAL COMPENSATION DATA
+==========================================
+CLASSIFICATION: STRICTLY CONFIDENTIAL
+ACCESS: HR AND EXECUTIVE TEAM ONLY
+
+EXECUTIVE COMPENSATION FY2025
+------------------------------
+CEO (John Mitchell):          $320,000 base + $180,000 bonus
+CTO (Sarah Chen):             $290,000 base + $150,000 bonus
+CFO (David Park):             $275,000 base + $140,000 bonus
+VP Engineering:               $240,000 base + $100,000 bonus
+
+ENGINEERING TEAM
+----------------
+Senior Engineers (12):        $155,000 - $180,000
+Mid-level Engineers (18):     $120,000 - $150,000
+Junior Engineers (9):         $85,000 - $110,000
+
+TOTAL PAYROLL FY2025:         $8,420,000
+
+NOTE: This document is subject to strict confidentiality agreements.
+Unauthorized access or disclosure is a terminable offense and may
+result in legal action.

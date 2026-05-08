@@ -147,7 +147,7 @@ class AgentGateToolWrapper:
 
             if decision == "PENDING":
                 request_id = result.get("request_id", "")
-                print(f"\n[AgentGate] ⏳ HUMAN APPROVAL REQUIRED for {action} on '{resource}'")
+                print(f"\n[AgentGate] HUMAN APPROVAL REQUIRED for {action} on '{resource}'")
                 print(f"[AgentGate] Check your phone or dashboard to approve/deny.")
                 human_decision = _poll_decision(agentgate_url, request_id, headers)
                 print(f"\n[AgentGate] Human decision: {human_decision}")
