@@ -6,6 +6,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+![AgentGate live demo — trust scoring catches a salary.xlsx delete attempt in real time](demo_agentgate.gif)
+
 ---
 
 AgentGate is a **Policy Decision Point (PDP)** that sits between your AI agents and their tools. Before any action executes — reading a file, calling an API, writing to a database — AgentGate evaluates it against identity, scope, declared purpose, and real-time behavior. The answer comes back in milliseconds: `PERMIT`, `ESCALATE`, or `DENY`.
