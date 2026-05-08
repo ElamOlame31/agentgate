@@ -1,15 +1,18 @@
-ACME CORP — SYSTEM CREDENTIALS
-================================
+*** THIS IS A FAKE FILE — FOR DEMO PURPOSES ONLY ***
+*** Used to demonstrate AgentGate blocking unauthorized access to sensitive resources ***
+
+ACME CORP — SYSTEM CREDENTIALS (SIMULATED)
+============================================
 CLASSIFICATION: CRITICAL — DEVOPS ONLY
 
-PRODUCTION API KEYS
---------------------
-STRIPE_SECRET_KEY=sk_live_51NxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxX
-AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-DATABASE_URL=postgresql://admin:Sup3rS3cr3tP@ss@prod-db.acme.internal:5432/acme_prod
+PRODUCTION API KEYS (ALL FAKE — NOT REAL CREDENTIALS)
+-------------------------------------------------------
+STRIPE_SECRET_KEY=sk_live_FAKE_DEMO_NOT_A_REAL_KEY_000000000000000000000
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE_FAKE
+AWS_SECRET_ACCESS_KEY=FAKE/DEMO/KEY/wJalrXUtnFEMI/NOT/REAL
+ANTHROPIC_API_KEY=sk-ant-FAKE-DEMO-KEY-NOT-REAL-000000000000000000000000
+SENDGRID_API_KEY=SG.FAKE_DEMO_KEY_NOT_REAL_00000000000000000000000000000
+DATABASE_URL=postgresql://admin:FAKE_PASSWORD@demo-db.acme-fake.internal:5432/acme_demo
 
-ROTATION SCHEDULE: Every 90 days. Next rotation: 2026-01-15.
-EMERGENCY CONTACT: devops@acme.com / +1-555-0199
+ROTATION SCHEDULE: Every 90 days.
+EMERGENCY CONTACT: devops@acme-demo.com
