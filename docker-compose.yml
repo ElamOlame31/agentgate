@@ -14,6 +14,16 @@ services:
       - AGENTGATE_ALERT_TOPIC=${AGENTGATE_ALERT_TOPIC:-}
       - AGENTGATE_WEBHOOK_URL=${AGENTGATE_WEBHOOK_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Splunk HEC — fires on every authorization decision (PERMIT, DENY, ESCALATE)
+      - AGENTGATE_SPLUNK_HEC_URL=${AGENTGATE_SPLUNK_HEC_URL:-}
+      - AGENTGATE_SPLUNK_TOKEN=${AGENTGATE_SPLUNK_TOKEN:-}
+      - AGENTGATE_SPLUNK_INDEX=${AGENTGATE_SPLUNK_INDEX:-main}
+      # Microsoft Sentinel — Log Analytics workspace
+      - AGENTGATE_SENTINEL_WORKSPACE_ID=${AGENTGATE_SENTINEL_WORKSPACE_ID:-}
+      - AGENTGATE_SENTINEL_KEY=${AGENTGATE_SENTINEL_KEY:-}
+      - AGENTGATE_SENTINEL_LOG_TYPE=${AGENTGATE_SENTINEL_LOG_TYPE:-AgentGateDecision}
+      # Audit log HMAC signing key (tamper-evident chain)
+      - AGENTGATE_LOG_KEY=${AGENTGATE_LOG_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; assert httpx.get('http://localhost:8000/healthz').status_code == 200"]

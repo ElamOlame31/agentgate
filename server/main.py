@@ -84,7 +84,10 @@ from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
     check_policies, Policy, init_policy_table
 )
-from core.alerts import fire_alert, fire_approval_request, alerts_configured, alert_status
+from core.alerts import (
+    fire_alert, fire_siem_event, fire_approval_request,
+    alerts_configured, alert_status, siem_configured, siem_status,
+)
 from core.report import generate_pdf, generate_csv
 from core import approvals
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
@@ -174,6 +177,11 @@ async def lifespan(app: FastAPI):
         print(f"[AgentGate] Alerts ON -> {alert_status()}")
     else:
         print("[AgentGate] Alerts OFF — set AGENTGATE_ALERT_TOPIC in .env to enable")
+    if siem_configured():
+        for dest in siem_status():
+            print(f"[AgentGate] SIEM ON -> {dest}")
+    else:
+        print("[AgentGate] SIEM OFF — set AGENTGATE_SPLUNK_HEC_URL or AGENTGATE_SENTINEL_WORKSPACE_ID to enable")
     yield
     cleanup_task.cancel()
 
@@ -228,7 +236,11 @@ async def _security_headers(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "alerts": alert_status(),
+        "siem": siem_status() or "not configured",
+    }
 
 
 # ── Agent Registration ──────────────────────────────────────────────────────
@@ -433,6 +445,14 @@ async def authorize(request: Request, body: AuthorizationRequest):
             response.explanation, response.attack_flags,
             response.trust_breakdown.final_score,
         )
+        fire_siem_event(
+            response.decision.value, body.agent_id,
+            body.action, body.resource,
+            response.explanation, response.attack_flags,
+            response.trust_breakdown.final_score,
+            breakdown=response.trust_breakdown.model_dump(),
+            request_id=response.request_id,
+        )
         return response
 
     # ── Inline injection scan (when content is passed with the request) ────────
@@ -482,6 +502,12 @@ async def authorize(request: Request, body: AuthorizationRequest):
             fire_alert(
                 "DENY", body.agent_id, body.action, body.resource,
                 response.explanation, response.attack_flags, 0,
+            )
+            fire_siem_event(
+                "DENY", body.agent_id, body.action, body.resource,
+                response.explanation, response.attack_flags, 0,
+                breakdown=response.trust_breakdown.model_dump(),
+                request_id=response.request_id,
             )
             return response
 
@@ -551,6 +577,14 @@ async def authorize(request: Request, body: AuthorizationRequest):
         body.action, body.resource,
         explanation, flags,
         breakdown.final_score,
+    )
+    fire_siem_event(
+        decision.value, body.agent_id,
+        body.action, body.resource,
+        explanation, flags,
+        breakdown.final_score,
+        breakdown=breakdown.model_dump(),
+        request_id=body.request_id,
     )
     return response
 

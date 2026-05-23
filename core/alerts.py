@@ -3,7 +3,7 @@ Alert dispatcher for AgentGate.
 
 Fires real-time notifications when AgentGate makes an ESCALATE or DENY decision.
 Supports ntfy.sh (push notifications), Slack (Block Kit), Teams (Adaptive Cards),
-and any generic webhook URL.
+generic webhooks, Splunk HEC, and Microsoft Sentinel.
 
 Configure in .env:
     AGENTGATE_ALERT_TOPIC=agentgate-yourname        # ntfy.sh topic
@@ -11,8 +11,23 @@ Configure in .env:
     AGENTGATE_WEBHOOK_URL=https://…webhook.office…  # Teams incoming webhook
     AGENTGATE_ALERT_ON_ESCALATE=true
     AGENTGATE_ALERT_ON_DENY=true
+
+    # Splunk HEC (fires on every decision)
+    AGENTGATE_SPLUNK_HEC_URL=https://splunk.example.com:8088
+    AGENTGATE_SPLUNK_TOKEN=your-hec-token
+    AGENTGATE_SPLUNK_INDEX=main               # optional, default: main
+
+    # Microsoft Sentinel / Log Analytics (fires on every decision)
+    AGENTGATE_SENTINEL_WORKSPACE_ID=your-workspace-id
+    AGENTGATE_SENTINEL_KEY=your-primary-key   # base64-encoded shared key
+    AGENTGATE_SENTINEL_LOG_TYPE=AgentGateDecision  # optional, default shown
 """
 
+import base64
+import datetime
+import hashlib
+import hmac as _hmac_mod
+import json
 import os
 import threading
 import httpx
@@ -169,6 +184,158 @@ def _send(decision: str, agent_id: str, action: str, resource: str,
         except Exception as e:
             print(f"[AgentGate] Webhook error: {e}", flush=True)
 
+
+# ── SIEM Connectors ────────────────────────────────────────────────────────────
+
+def _build_siem_event(decision: str, agent_id: str, action: str, resource: str,
+                      explanation: str, flags: list[str], score: float,
+                      breakdown: dict | None = None,
+                      request_id: str | None = None) -> dict:
+    import time as _time
+    event = {
+        "timestamp": _time.time(),
+        "request_id": request_id or "",
+        "decision": decision,
+        "agent_id": agent_id,
+        "action": action,
+        "resource": resource,
+        "trust_score": round(score, 2),
+        "attack_flags": flags,
+        "explanation": explanation,
+        "source": "agentgate-pdp",
+    }
+    if breakdown:
+        event.update({
+            "identity_score":    round(breakdown.get("identity_score", 0), 2),
+            "delegation_score":  round(breakdown.get("delegation_score", 0), 2),
+            "purpose_score":     round(breakdown.get("purpose_alignment_score", 0), 2),
+            "behavioral_score":  round(breakdown.get("behavioral_score", 0), 2),
+            "resource_sensitivity": breakdown.get("resource_sensitivity", ""),
+        })
+    return event
+
+
+def _splunk_send(event: dict):
+    url   = os.getenv("AGENTGATE_SPLUNK_HEC_URL", "").rstrip("/")
+    token = os.getenv("AGENTGATE_SPLUNK_TOKEN", "")
+    index = os.getenv("AGENTGATE_SPLUNK_INDEX", "main")
+    if not url or not token:
+        return
+    payload = {
+        "time":       event.get("timestamp"),
+        "host":       "agentgate",
+        "source":     "agentgate-pdp",
+        "sourcetype": "agentgate:decision",
+        "index":      index,
+        "event":      event,
+    }
+    try:
+        r = httpx.post(
+            f"{url}/services/collector/event",
+            json=payload,
+            headers={"Authorization": f"Splunk {token}"},
+            timeout=5.0,
+            verify=False,  # common in on-prem Splunk with self-signed certs
+        )
+        if r.status_code not in (200, 204):
+            print(f"[AgentGate] Splunk HEC {r.status_code}: {r.text[:120]}", flush=True)
+    except Exception as e:
+        print(f"[AgentGate] Splunk HEC error: {e}", flush=True)
+
+
+def _sentinel_sign(workspace_id: str, shared_key: str, rfc822_date: str,
+                   content_length: int) -> str:
+    """Compute SharedKey HMAC-SHA256 signature for Azure Monitor Data Collector API."""
+    string_to_sign = (
+        f"POST\n{content_length}\napplication/json\n"
+        f"x-ms-date:{rfc822_date}\n/api/logs"
+    )
+    key_bytes = base64.b64decode(shared_key)
+    sig_bytes = _hmac_mod.new(key_bytes, string_to_sign.encode("utf-8"), hashlib.sha256).digest()
+    return base64.b64encode(sig_bytes).decode()
+
+
+def _sentinel_send(event: dict):
+    workspace_id = os.getenv("AGENTGATE_SENTINEL_WORKSPACE_ID", "")
+    shared_key   = os.getenv("AGENTGATE_SENTINEL_KEY", "")
+    log_type     = os.getenv("AGENTGATE_SENTINEL_LOG_TYPE", "AgentGateDecision")
+    if not workspace_id or not shared_key:
+        return
+
+    body_bytes = json.dumps([event]).encode("utf-8")
+    rfc822_date = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    try:
+        signature = _sentinel_sign(workspace_id, shared_key, rfc822_date, len(body_bytes))
+    except Exception as e:
+        print(f"[AgentGate] Sentinel signature error: {e}", flush=True)
+        return
+
+    url = (
+        f"https://{workspace_id}.ods.opinsights.azure.com"
+        "/api/logs?api-version=2016-04-01"
+    )
+    try:
+        r = httpx.post(
+            url,
+            content=body_bytes,
+            headers={
+                "Authorization":      f"SharedKey {workspace_id}:{signature}",
+                "Log-Type":           log_type,
+                "x-ms-date":          rfc822_date,
+                "Content-Type":       "application/json",
+                "time-generated-field": "timestamp",
+            },
+            timeout=10.0,
+        )
+        if r.status_code not in (200, 202, 204):
+            print(f"[AgentGate] Sentinel {r.status_code}: {r.text[:120]}", flush=True)
+    except Exception as e:
+        print(f"[AgentGate] Sentinel error: {e}", flush=True)
+
+
+def _send_siem(event: dict):
+    _splunk_send(event)
+    _sentinel_send(event)
+
+
+def fire_siem_event(decision: str, agent_id: str, action: str, resource: str,
+                    explanation: str, flags: list[str], score: float,
+                    breakdown: dict | None = None, request_id: str | None = None):
+    """Forward every authorization decision to configured SIEM connectors.
+
+    Unlike fire_alert(), this fires on PERMIT as well — SIEMs need the full
+    audit stream, not just incidents. Runs in a daemon background thread so it
+    never adds latency to the /authorize response.
+    """
+    splunk_url   = os.getenv("AGENTGATE_SPLUNK_HEC_URL", "")
+    sentinel_id  = os.getenv("AGENTGATE_SENTINEL_WORKSPACE_ID", "")
+    if not splunk_url and not sentinel_id:
+        return
+    event = _build_siem_event(decision, agent_id, action, resource,
+                               explanation, flags, score, breakdown, request_id)
+    threading.Thread(target=_send_siem, args=(event,), daemon=True).start()
+
+
+def siem_configured() -> bool:
+    return bool(
+        os.getenv("AGENTGATE_SPLUNK_HEC_URL") or
+        os.getenv("AGENTGATE_SENTINEL_WORKSPACE_ID")
+    )
+
+
+def siem_status() -> list[str]:
+    destinations = []
+    if os.getenv("AGENTGATE_SPLUNK_HEC_URL"):
+        url = os.getenv("AGENTGATE_SPLUNK_HEC_URL", "")
+        destinations.append(f"splunk:{url}")
+    if os.getenv("AGENTGATE_SENTINEL_WORKSPACE_ID"):
+        wid = os.getenv("AGENTGATE_SENTINEL_WORKSPACE_ID", "")
+        log_type = os.getenv("AGENTGATE_SENTINEL_LOG_TYPE", "AgentGateDecision")
+        destinations.append(f"sentinel:{wid}/{log_type}")
+    return destinations
+
+
+# ── Incident Alerts (DENY / ESCALATE only) ────────────────────────────────────
 
 def fire_alert(decision: str, agent_id: str, action: str, resource: str,
                explanation: str, flags: list[str], score: float):
