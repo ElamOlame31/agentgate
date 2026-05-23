@@ -48,9 +48,20 @@ OAuth checked *who the agent was*. AgentGate checks *what it's doing and why*.
 
 ## Quick start
 
+**One-command attack demo** — no `.env`, no config. Spins up AgentGate, runs 5 live attack phases, and shows each decision in the dashboard:
+
 ```bash
 git clone https://github.com/ElamOlame31/agentgate
 cd agentgate
+docker compose -f docker-compose.demo.yml up
+# Dashboard → http://localhost:8000
+```
+
+AgentGate starts, loads the trust-scoring models, then the demo container runs automatically. Every attack is blocked and logged to the dashboard in real time.
+
+**Production setup:**
+
+```bash
 cp .env.example .env   # set AGENTGATE_API_KEY
 pip install -r requirements.txt
 python run.py

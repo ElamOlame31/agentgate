@@ -1,0 +1,45 @@
+## One-command attack demo — no .env required.
+##
+##   docker compose -f docker-compose.demo.yml up
+##
+## AgentGate starts, loads models, then the demo container runs 5 attack
+## phases automatically and prints results to stdout.
+## Dashboard is live at http://localhost:8000 while the demo runs.
+
+services:
+
+  agentgate:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - AGENTGATE_HOST=0.0.0.0
+      - AGENTGATE_PORT=8000
+      - AGENTGATE_ENV=development
+      # Pre-set demo key — no .env needed.
+      - AGENTGATE_API_KEY=ag-demo-secret-key-2026-local
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import httpx; assert httpx.get('http://localhost:8000/healthz').status_code == 200"
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 60s
+
+  demo:
+    image: python:3.12-slim
+    volumes:
+      - ./demo_attack.py:/demo_attack.py:ro
+    environment:
+      - AGENTGATE_URL=http://agentgate:8000
+      - AGENTGATE_API_KEY=ag-demo-secret-key-2026-local
+    command: >
+      sh -c "pip install --quiet httpx rich &&
+             python /demo_attack.py"
+    depends_on:
+      agentgate:
+        condition: service_healthy
+    restart: "no"
