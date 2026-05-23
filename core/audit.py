@@ -1,4 +1,5 @@
 import hashlib
+import hmac as _hmac_mod
 import os
 import re
 import sqlite3
@@ -7,6 +8,8 @@ import time
 import uuid
 from pathlib import Path
 from core.models import AuthorizationResponse, AgentRegistration
+
+_LOG_KEY = os.getenv("AGENTGATE_LOG_KEY", "agentgate-log-integrity-default").encode()
 
 # Regex that matches a UUID v4 — tokens stored before H2 are plaintext UUIDs.
 _UUID_RE = re.compile(
@@ -40,7 +43,22 @@ def init_db():
             resource_sensitivity TEXT,
             explanation TEXT,
             attack_flags TEXT,
-            full_json TEXT
+            full_json TEXT,
+            entry_hash TEXT DEFAULT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            request_id TEXT PRIMARY KEY,
+            agent_id TEXT,
+            action TEXT,
+            resource TEXT,
+            explanation TEXT,
+            trust_score REAL,
+            status TEXT DEFAULT 'PENDING',
+            created_at REAL,
+            resolved_at REAL DEFAULT NULL,
+            expires_at REAL
         )
     """)
     conn.execute("""
@@ -60,6 +78,11 @@ def init_db():
             scope_at_delegation TEXT DEFAULT NULL
         )
     """)
+    # Migrate audit_log to add entry_hash column
+    try:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT DEFAULT NULL")
+    except Exception:
+        pass  # already exists
     # Migrate existing tables that predate these columns
     _allowed_migrations = {
         "processes_external_content": "0",
@@ -96,10 +119,29 @@ def init_db():
     conn.close()
 
 
+def _get_last_entry_hash(conn) -> str:
+    row = conn.execute(
+        "SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else "genesis"
+
+
+def _compute_entry_hash(prev_hash: str, entry_json: str) -> str:
+    msg = (prev_hash + entry_json).encode()
+    return _hmac_mod.new(_LOG_KEY, msg, hashlib.sha256).hexdigest()
+
+
 def log_decision(response: AuthorizationResponse, record_history: bool = True):
     conn = sqlite3.connect(DB_PATH)
+    entry_json = response.model_dump_json()
+    prev_hash  = _get_last_entry_hash(conn)
+    entry_hash = _compute_entry_hash(prev_hash, entry_json)
     conn.execute("""
-        INSERT INTO audit_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO audit_log
+        (id, timestamp, agent_id, action, resource, decision, trust_score,
+         identity_score, delegation_score, purpose_score, behavioral_score,
+         resource_sensitivity, explanation, attack_flags, full_json, entry_hash)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         response.request_id,
         response.timestamp,
@@ -115,7 +157,8 @@ def log_decision(response: AuthorizationResponse, record_history: bool = True):
         response.trust_breakdown.resource_sensitivity.value,
         response.explanation,
         json.dumps(response.attack_flags),
-        response.model_dump_json()
+        entry_json,
+        entry_hash,
     ))
     # Don't record unregistered-agent probes in request_history — they would
     # poison the velocity baseline for any agent later registered with that ID.
@@ -334,6 +377,68 @@ def cleanup_old_audit_log(max_age_days: int = 90):
     conn.execute("DELETE FROM audit_log WHERE timestamp<?", (cutoff,))
     conn.commit()
     conn.close()
+
+
+def verify_chain() -> dict:
+    """Walk the HMAC chain and return whether the audit log is intact."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, full_json, entry_hash FROM audit_log "
+        "WHERE entry_hash IS NOT NULL ORDER BY timestamp ASC"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return {"valid": True, "entries_verified": 0, "broken_at": None,
+                "message": "No signed entries yet — entries are signed from this version forward"}
+    prev_hash = "genesis"
+    for row in rows:
+        expected = _compute_entry_hash(prev_hash, row["full_json"])
+        if not _hmac_mod.compare_digest(expected, row["entry_hash"]):
+            return {"valid": False, "entries_verified": 0, "broken_at": row["id"],
+                    "message": "Audit log integrity violation detected"}
+        prev_hash = row["entry_hash"]
+    return {"valid": True, "entries_verified": len(rows), "broken_at": None,
+            "message": f"Audit chain verified — {len(rows)} signed entries are intact"}
+
+
+# ── Persistent pending approvals ──────────────────────────────────────────────
+
+def save_pending_approval(request_id: str, agent_id: str, action: str,
+                           resource: str, explanation: str, trust_score: float,
+                           expires_at: float):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT OR IGNORE INTO pending_approvals
+        (request_id, agent_id, action, resource, explanation, trust_score,
+         status, created_at, expires_at)
+        VALUES (?,?,?,?,?,?,'PENDING',?,?)
+    """, (request_id, agent_id, action, resource, explanation, trust_score,
+          time.time(), expires_at))
+    conn.commit()
+    conn.close()
+
+
+def resolve_pending_approval(request_id: str, status: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE pending_approvals SET status=?, resolved_at=? WHERE request_id=?",
+        (status, time.time(), request_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_active_pending_approvals() -> list[dict]:
+    """Return pending approvals that haven't expired yet (for startup reload)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM pending_approvals WHERE status='PENDING' AND expires_at > ?",
+        (time.time(),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_stats() -> dict:

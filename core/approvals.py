@@ -12,6 +12,22 @@ from typing import Dict, Optional
 
 TIMEOUT_SECONDS = 90
 
+# Lazy import to avoid circular import at module load time
+def _persist_create(request_id, agent_id, action, resource, explanation, trust_score, expires_at):
+    try:
+        from core import audit as _audit
+        _audit.save_pending_approval(request_id, agent_id, action, resource,
+                                     explanation, trust_score, expires_at)
+    except Exception:
+        pass
+
+def _persist_resolve(request_id, status):
+    try:
+        from core import audit as _audit
+        _audit.resolve_pending_approval(request_id, status)
+    except Exception:
+        pass
+
 
 class PendingApproval:
     def __init__(self, request_id: str, agent_id: str, action: str,
@@ -88,6 +104,8 @@ def create_pending(request_id: str, agent_id: str, action: str,
     approval = PendingApproval(request_id, agent_id, action, resource, explanation, trust_score)
     with _lock:
         _store[request_id] = approval
+    _persist_create(request_id, agent_id, action, resource, explanation,
+                    trust_score, approval.created_at + TIMEOUT_SECONDS)
     t = threading.Timer(TIMEOUT_SECONDS, _auto_deny, args=(request_id,))
     t.daemon = True
     t.start()
@@ -112,6 +130,7 @@ def approve(request_id: str) -> bool:
             return False
         approval.resolve("APPROVED")
         broadcast_data = approval.to_dict()
+    _persist_resolve(request_id, "APPROVED")
     if _broadcast_callback and broadcast_data:
         import asyncio
         try:
@@ -134,6 +153,7 @@ def deny(request_id: str) -> bool:
             return False
         approval.resolve("DENIED")
         broadcast_data = approval.to_dict()
+    _persist_resolve(request_id, "DENIED")
     if _broadcast_callback and broadcast_data:
         import asyncio
         try:

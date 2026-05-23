@@ -782,6 +782,45 @@ async def export_audit(
     )
 
 
+@app.get("/audit/verify", dependencies=[Depends(require_api_key)])
+@limiter.limit("10/minute")
+async def verify_audit_chain(request: Request):
+    """Verify cryptographic integrity of the audit log HMAC chain."""
+    return audit.verify_chain()
+
+
+@app.post("/templates/{name}/apply", dependencies=[Depends(require_api_key)])
+@limiter.limit("10/minute")
+async def apply_template(request: Request, name: str):
+    """Apply a compliance policy template (soc2, hipaa, gdpr, financial_services)."""
+    import yaml
+    from pathlib import Path
+    valid = {"soc2", "hipaa", "gdpr", "financial_services"}
+    if name not in valid:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template '{name}' not found. Choose from: {', '.join(sorted(valid))}"
+        )
+    template_path = Path(__file__).parent.parent / "templates" / f"{name}.yaml"
+    if not template_path.exists():
+        raise HTTPException(status_code=500, detail="Template file missing from server")
+    with open(template_path) as f:
+        data = yaml.safe_load(f)
+    created = []
+    for p in data.get("policies", []):
+        rule = p.get("rule", "").strip()
+        if rule:
+            policy = create_policy(rule)
+            created.append(policy.model_dump())
+    await manager.broadcast({"type": "policies", "data": [p.model_dump() for p in get_all_policies()]})
+    return {
+        "template": name,
+        "display_name": data.get("name", name),
+        "policies_created": len(created),
+        "policies": created,
+    }
+
+
 @app.get("/audit/baselines", dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 async def all_baselines(request: Request):

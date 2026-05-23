@@ -500,6 +500,60 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 .modal-flag-row:hover { background: var(--s2); }
 .modal-empty { padding: 48px; text-align: center; color: var(--text3); font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; }
 
+/* ── Toast Notifications ─────────────────────────────────────────────────── */
+.toast-container { position:fixed; bottom:20px; right:20px; z-index:9000; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+.toast {
+  background:var(--s2); border:1px solid var(--border-h); border-radius:var(--radius);
+  padding:10px 16px; font-family:var(--mono); font-size:11px; color:var(--text);
+  display:flex; align-items:center; gap:10px; min-width:220px; max-width:360px;
+  box-shadow:0 4px 20px rgba(0,0,0,.5); animation:toastIn 200ms ease-out; pointer-events:auto;
+}
+.toast.success { border-left:3px solid var(--green); }
+.toast.error   { border-left:3px solid var(--red); }
+.toast.info    { border-left:3px solid var(--cyan); }
+@keyframes toastIn  { from{opacity:0;transform:translateY(8px);}  to{opacity:1;transform:none;} }
+@keyframes toastOut { from{opacity:1;} to{opacity:0;} }
+
+/* ── Export Modal ─────────────────────────────────────────────────────────── */
+.export-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(4px);
+  z-index:400; align-items:center; justify-content:center;
+}
+.export-overlay.open { display:flex; }
+.export-modal {
+  background:var(--s1); border:1px solid var(--border-h); border-radius:var(--radius);
+  width:440px; max-width:95vw; padding:24px 28px; display:flex; flex-direction:column; gap:18px;
+  animation:modalIn .15s ease;
+}
+.export-field-label { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--text3); margin-bottom:5px; display:block; }
+.export-date-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.export-date-in {
+  background:var(--bg); border:1px solid var(--border); border-radius:4px;
+  padding:7px 10px; color:var(--text); font-family:var(--mono); font-size:12px;
+  width:100%; outline:none; transition:border-color 150ms;
+  color-scheme: dark;
+}
+.export-date-in:focus { border-color:var(--cyan); }
+.export-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
+.xbtn-cancel { background:none; border:1px solid var(--border); color:var(--text3); border-radius:4px; padding:8px 14px; font-family:var(--mono); font-size:11px; cursor:pointer; transition:border-color 150ms,color 150ms; }
+.xbtn-cancel:hover { border-color:var(--border-h); color:var(--text); }
+.xbtn-csv { background:rgba(0,212,255,.08); color:var(--cyan); border:1px solid rgba(0,212,255,.35); border-radius:4px; padding:8px 16px; font-family:var(--mono); font-size:11px; font-weight:700; cursor:pointer; transition:background 150ms; }
+.xbtn-csv:hover { background:rgba(0,212,255,.18); }
+.xbtn-pdf { background:var(--cyan); color:#000; border:none; border-radius:4px; padding:8px 18px; font-family:var(--mono); font-size:11px; font-weight:700; cursor:pointer; transition:opacity 150ms; }
+.xbtn-pdf:hover { opacity:.85; }
+.xbtn-pdf:disabled,.xbtn-csv:disabled { opacity:.4; cursor:default; }
+
+/* ── Compliance Templates ─────────────────────────────────────────────────── */
+.tmpl-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px; }
+.tmpl-btn {
+  background:rgba(0,212,255,.04); border:1px solid var(--border); border-radius:4px;
+  padding:6px 8px; color:var(--text2); font-family:var(--mono); font-size:10px;
+  font-weight:600; cursor:pointer; text-align:center; letter-spacing:.05em;
+  transition:background 150ms,border-color 150ms,color 150ms;
+}
+.tmpl-btn:hover { background:rgba(0,212,255,.12); border-color:rgba(0,212,255,.4); color:var(--cyan); }
+.tmpl-btn:disabled { opacity:.4; cursor:default; }
+
 /* ── Login Overlay ──────────────────────────────────────────────────────────── */
 #login-overlay {
   position: fixed; inset: 0; z-index: 9999;
@@ -553,8 +607,7 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
   <div class="h-center">TRUST AUTHORIZATION LAYER &nbsp;·&nbsp; v0.2.1 &nbsp;·&nbsp; POLICY DECISION POINT</div>
   <div class="h-right">
     <div style="display:flex;gap:6px;">
-      <button onclick="exportReport('pdf')" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 10px;background:rgba(0,212,255,.08);border:1px solid var(--cyan);color:var(--cyan);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Download PDF compliance report">⬇ PDF</button>
-      <button onclick="exportReport('csv')" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 10px;background:rgba(0,212,255,.05);border:1px solid var(--border-h);color:var(--text2);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Download CSV audit log">⬇ CSV</button>
+      <button onclick="openExportModal()" style="font-family:var(--mono);font-size:10px;font-weight:700;padding:4px 12px;background:rgba(0,212,255,.08);border:1px solid var(--cyan);color:var(--cyan);border-radius:4px;cursor:pointer;letter-spacing:.05em;" title="Export compliance report (PDF or CSV)">⬇ Export Report</button>
     </div>
     <span class="h-clock" id="clock">--:--:--</span>
     <span class="h-status" id="sys-status">SYSTEM NOMINAL</span>
@@ -579,6 +632,15 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
       </div>
       <div id="policies-list">
         <div style="font-size:10px;color:var(--text3);">No active policies.</div>
+      </div>
+    </div>
+    <div class="left-section policy-section" style="flex-shrink:0;">
+      <div class="section-label" style="padding:10px 0 6px 0;">Compliance Templates</div>
+      <div class="tmpl-grid">
+        <button class="tmpl-btn" onclick="applyTemplate('soc2',this)">SOC 2</button>
+        <button class="tmpl-btn" onclick="applyTemplate('hipaa',this)">HIPAA</button>
+        <button class="tmpl-btn" onclick="applyTemplate('gdpr',this)">GDPR</button>
+        <button class="tmpl-btn" onclick="applyTemplate('financial_services',this)">FinServ</button>
       </div>
     </div>
   </div>
@@ -692,6 +754,43 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 
   </div>
 </div>
+</div>
+
+<!-- ── Toast Container ───────────────────────────────────────────────────── -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ── Export Modal ──────────────────────────────────────────────────────── -->
+<div class="export-overlay" id="export-overlay" onclick="closeExportModal(event)">
+  <div class="export-modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.1em;color:var(--cyan);">COMPLIANCE REPORT</span>
+      <button class="xbtn-cancel" style="border:none;padding:2px 8px;font-size:14px;" onclick="closeExportModalDirect()">✕</button>
+    </div>
+    <div>
+      <span class="export-field-label">Date Range</span>
+      <div class="export-date-row">
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">FROM</div>
+          <input type="date" id="export-from" class="export-date-in" />
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">TO</div>
+          <input type="date" id="export-to" class="export-date-in" />
+        </div>
+      </div>
+    </div>
+    <div>
+      <span class="export-field-label">Filter by Agent (optional)</span>
+      <select id="export-agent" class="export-date-in" style="cursor:pointer;">
+        <option value="">All agents</option>
+      </select>
+    </div>
+    <div class="export-btns">
+      <button class="xbtn-cancel" onclick="closeExportModalDirect()">Cancel</button>
+      <button class="xbtn-csv" id="xbtn-csv" onclick="doExport('csv')">⬇ CSV</button>
+      <button class="xbtn-pdf" id="xbtn-pdf" onclick="doExport('pdf')">⬇ PDF</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Login Overlay ─────────────────────────────────────────────────────── -->
@@ -1437,7 +1536,6 @@ async function openModal(filter) {
 
 function closeModal(e) { if(e.target===document.getElementById('modal-overlay')) closeModalDirect(); }
 function closeModalDirect() { document.getElementById('modal-overlay').classList.remove('open'); }
-document.addEventListener('keydown', e => { if(e.key==='Escape') closeModalDirect(); });
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 
@@ -1568,6 +1666,110 @@ document.getElementById('login-key-input').addEventListener('keydown', e => {
 });
 
 document.getElementById('policy-input').addEventListener('keydown', e => { if(e.key==='Enter') addPolicy(); });
+
+// ── Toast Notifications ───────────────────────────────────────────────────
+
+function showToast(msg, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  const color = type==='success'?'var(--green)':type==='error'?'var(--red)':'var(--cyan)';
+  const icon  = type==='success'?'✓':type==='error'?'✕':'·';
+  toast.innerHTML = `<span style="color:${color};font-size:14px;flex-shrink:0;">${icon}</span><span>${esc(msg)}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'toastOut 200ms ease forwards';
+    setTimeout(() => toast.remove(), 210);
+  }, 3500);
+}
+
+// ── Export Modal ──────────────────────────────────────────────────────────
+
+function openExportModal() {
+  const now  = new Date();
+  const from = new Date(now - 30 * 86400 * 1000);
+  const fmt  = d => d.toISOString().split('T')[0];
+  document.getElementById('export-to').value   = fmt(now);
+  document.getElementById('export-from').value = fmt(from);
+  const sel = document.getElementById('export-agent');
+  sel.innerHTML = '<option value="">All agents</option>' +
+    _allAgents.map(a => `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join('');
+  document.getElementById('export-overlay').classList.add('open');
+}
+
+function closeExportModal(e) {
+  if (e.target === document.getElementById('export-overlay')) closeExportModalDirect();
+}
+
+function closeExportModalDirect() {
+  document.getElementById('export-overlay').classList.remove('open');
+}
+
+async function doExport(format) {
+  const fromVal = document.getElementById('export-from').value;
+  const toVal   = document.getElementById('export-to').value;
+  const agentId = document.getElementById('export-agent').value;
+  if (!fromVal || !toVal) { showToast('Select a date range first', 'error'); return; }
+  const fromTs = Math.floor(new Date(fromVal).getTime() / 1000);
+  const toTs   = Math.floor(new Date(toVal + 'T23:59:59').getTime() / 1000);
+  if (toTs <= fromTs) { showToast('End date must be after start date', 'error'); return; }
+
+  const btns = [document.getElementById('xbtn-pdf'), document.getElementById('xbtn-csv')];
+  btns.forEach(b => { if(b) b.disabled = true; });
+  try {
+    let url = `${API}/audit/export?format=${format}&from_ts=${fromTs}&to_ts=${toTs}`;
+    if (agentId) url += `&agent_id=${encodeURIComponent(agentId)}`;
+    const r = await fetch(url, { headers: getApiHeaders() });
+    if (!r.ok) {
+      const txt = await r.text().catch(()=>'');
+      showToast(`Export failed: ${txt.slice(0,80)}`, 'error');
+      return;
+    }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `agentgate_audit_${fromVal}_${toVal}.${format}`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    closeExportModalDirect();
+    showToast(`${format.toUpperCase()} report downloaded`, 'success');
+  } catch(e) {
+    showToast(`Export error: ${e.message}`, 'error');
+  } finally {
+    btns.forEach(b => { if(b) b.disabled = false; });
+  }
+}
+
+// ── Compliance Templates ──────────────────────────────────────────────────
+
+async function applyTemplate(name, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch(`${API}/templates/${name}/apply`, {
+      method: 'POST', headers: getApiHeaders()
+    });
+    if (!r.ok) {
+      const err = await r.text().catch(()=>'');
+      showToast(`Template failed: ${err.slice(0,60)}`, 'error');
+      return;
+    }
+    const data = await r.json();
+    showToast(`${data.policies_created} policies applied — ${data.display_name}`, 'success');
+    refreshPolicies();
+  } catch(e) {
+    showToast(`Error: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeExportModalDirect(); closeModalDirect(); }
+});
+
 connect();
 refreshAgents();
 refreshPolicies();
