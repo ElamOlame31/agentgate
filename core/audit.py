@@ -1,10 +1,23 @@
+import hashlib
 import os
+import re
 import sqlite3
 import json
 import time
 import uuid
 from pathlib import Path
 from core.models import AuthorizationResponse, AgentRegistration
+
+# Regex that matches a UUID v4 — tokens stored before H2 are plaintext UUIDs.
+_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
+
+
+def hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of a token. Used for storage and comparison."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 DB_PATH = Path(__file__).parent.parent / "agentgate_audit.db"
 
@@ -83,7 +96,7 @@ def init_db():
     conn.close()
 
 
-def log_decision(response: AuthorizationResponse):
+def log_decision(response: AuthorizationResponse, record_history: bool = True):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT INTO audit_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -104,9 +117,12 @@ def log_decision(response: AuthorizationResponse):
         json.dumps(response.attack_flags),
         response.model_dump_json()
     ))
-    conn.execute("""
-        INSERT INTO request_history VALUES (?,?,?,?,?)
-    """, (str(uuid.uuid4()), response.agent_id, response.action, response.resource, response.timestamp))
+    # Don't record unregistered-agent probes in request_history — they would
+    # poison the velocity baseline for any agent later registered with that ID.
+    if record_history:
+        conn.execute("""
+            INSERT INTO request_history VALUES (?,?,?,?,?)
+        """, (str(uuid.uuid4()), response.agent_id, response.action, response.resource, response.timestamp))
     conn.commit()
     conn.close()
 
@@ -170,6 +186,9 @@ TOKEN_TTL = max(60.0, float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600))))
 
 
 def save_agent(agent: AgentRegistration):
+    # Store the hash of the token, never the plaintext.
+    # agent.token at this point is already a SHA-256 hex digest (set by the server
+    # endpoints before calling save_agent), so we write it directly.
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO agents
@@ -196,7 +215,6 @@ def load_all_agents() -> dict[str, AgentRegistration]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM agents").fetchall()
-    conn.close()
     result = {}
     for r in rows:
         d = dict(r)
@@ -207,13 +225,26 @@ def load_all_agents() -> dict[str, AgentRegistration]:
         raw_scope = d.get("scope_at_delegation")
         d["scope_at_delegation"] = json.loads(raw_scope) if raw_scope else None
         d.pop("registered_at", None)
+        # Migrate: tokens stored before H2 are plaintext UUIDs. Hash them now and
+        # persist so future restarts don't need to re-migrate.
+        if d.get("token") and _UUID_RE.match(d["token"]):
+            hashed = hash_token(d["token"])
+            conn.execute(
+                "UPDATE agents SET token=? WHERE agent_id=?",
+                (hashed, d["agent_id"])
+            )
+            d["token"] = hashed
         result[d["agent_id"]] = AgentRegistration(**d)
+    conn.commit()
+    conn.close()
     return result
 
 
 def delete_agent(agent_id: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM agents WHERE agent_id=?", (agent_id,))
+    conn.execute("DELETE FROM agent_baselines WHERE agent_id=?", (agent_id,))
+    conn.execute("DELETE FROM request_history WHERE agent_id=?", (agent_id,))
     conn.commit()
     conn.close()
 

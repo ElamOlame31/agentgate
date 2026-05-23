@@ -13,6 +13,10 @@ MAX_DELEGATION_DEPTH = 3
 CHAIN_TRUST_DECAY = 0.10  # 10% trust penalty per delegation level
 
 
+class ChainBrokenError(Exception):
+    """Raised when an ancestor in the delegation chain is missing from the registry."""
+
+
 # ── Scope validation ──────────────────────────────────────────────────────────
 
 def _pattern_covered_by(child: str, parent: str) -> bool:
@@ -55,14 +59,18 @@ def validate_delegation(
 # ── Chain walking ─────────────────────────────────────────────────────────────
 
 def get_chain(agent_id: str, agents: dict) -> list:
-    """Walk up the delegation chain. Returns list from root → agent."""
+    """
+    Walk up the delegation chain. Returns list from root → agent.
+    Raises ChainBrokenError if any ancestor is missing — fail closed,
+    never silently skip a gap in the chain.
+    """
     chain = []
     current_id = agent_id
     visited = set()
     while current_id and current_id not in visited:
         agent = agents.get(current_id)
         if not agent:
-            break
+            raise ChainBrokenError(f"ancestor '{current_id}' is missing from the registry")
         chain.append(agent)
         visited.add(current_id)
         current_id = agent.delegated_by
@@ -77,7 +85,10 @@ def check_chain_scope(agent_id: str, action: str, resource: str, agents: dict) -
 
     This is the core enforcement: a child CANNOT do what its parent couldn't do.
     """
-    chain = get_chain(agent_id, agents)
+    try:
+        chain = get_chain(agent_id, agents)
+    except ChainBrokenError as e:
+        return False, str(e)
     if len(chain) <= 1:
         return True, ""
 
@@ -110,5 +121,8 @@ def compute_chain_trust_multiplier(delegation_depth: int) -> float:
 
 def chain_summary(agent_id: str, agents: dict) -> str:
     """Return a human-readable chain string like 'root → analyst → summarizer'."""
-    chain = get_chain(agent_id, agents)
-    return " -> ".join(a.agent_id for a in chain)
+    try:
+        chain = get_chain(agent_id, agents)
+        return " -> ".join(a.agent_id for a in chain)
+    except ChainBrokenError as e:
+        return f"{agent_id} [BROKEN CHAIN: {e}]"

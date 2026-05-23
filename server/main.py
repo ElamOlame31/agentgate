@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import asyncio
 import hmac
 import json
 import posixpath
@@ -26,13 +27,29 @@ load_dotenv()
 # ── API Key Auth ─────────────────────────────────────────────────────────────
 
 def _get_api_key() -> str | None:
-    return os.getenv("AGENTGATE_API_KEY", "").strip() or None
+    key = os.getenv("AGENTGATE_API_KEY", "").strip()
+    env = os.getenv("AGENTGATE_ENV", "development").lower()
+    if not key:
+        if env != "development":
+            raise RuntimeError(
+                "AGENTGATE_API_KEY is required when AGENTGATE_ENV != development. "
+                "Set AGENTGATE_ENV=development only for local-only testing."
+            )
+        return None
+    if len(key) < 24:
+        raise RuntimeError("AGENTGATE_API_KEY must be at least 24 characters")
+    return key
+
+
+def _get_admin_key() -> str | None:
+    key = os.getenv("AGENTGATE_ADMIN_KEY", "").strip()
+    return key or None
+
 
 async def require_api_key(request: Request):
     api_key = _get_api_key()
     if api_key is None:
-        return  # auth disabled — no key configured
-    # Accept from header (API clients) or query param (WebSocket / ntfy.sh callbacks)
+        return  # auth disabled — development mode only
     provided = request.headers.get("X-API-Key", "") or request.query_params.get("key", "")
     if not hmac.compare_digest(provided, api_key):
         client = request.client.host if request.client else "unknown"
@@ -40,11 +57,28 @@ async def require_api_key(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
+async def require_admin_key(request: Request):
+    """
+    Approval/deny endpoints require a separate admin credential.
+    If AGENTGATE_ADMIN_KEY is set, it must be provided as X-Admin-Key header or admin_key param.
+    If not set, falls back to AGENTGATE_API_KEY so existing single-key setups keep working.
+    """
+    admin_key = _get_admin_key()
+    if admin_key is not None:
+        provided = request.headers.get("X-Admin-Key", "") or request.query_params.get("admin_key", "")
+        if not hmac.compare_digest(provided, admin_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing admin key.")
+    else:
+        # Fall back to API key check so single-key dev setups are not broken
+        await require_api_key(request)
+
+
 from core.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
     ContentScanRequest, ContentScanResponse,
 )
 from core import audit, trust_engine
+from core.audit import hash_token
 from core.explainer import generate_explanation
 from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
@@ -57,6 +91,11 @@ from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_D
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
+
+# Recent scan results per agent — used to link /scan stage into /authorize
+# { agent_id: { "score": float, "level": str, "ts": float } }
+_recent_scans: dict[str, dict] = {}
+_SCAN_TTL = 120.0  # seconds before a scan result expires
 
 
 _MAX_WS_CONNECTIONS = 100
@@ -80,9 +119,11 @@ class ConnectionManager:
 
     async def broadcast(self, data: dict):
         dead = []
+        msg = json.dumps(data)
         for ws in self._connections:
             try:
-                await ws.send_text(json.dumps(data))
+                # Timeout prevents a slow or stalled client from blocking all broadcasts.
+                await asyncio.wait_for(ws.send_text(msg), timeout=5.0)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -102,6 +143,11 @@ async def _periodic_cleanup():
         await asyncio.sleep(3600)
         audit.cleanup_old_history(max_age_seconds=3600.0)
         audit.cleanup_old_audit_log()
+        # Evict expired scan results to prevent unbounded memory growth
+        now = time.time()
+        expired = [aid for aid, s in _recent_scans.items() if now - s["ts"] > _SCAN_TTL]
+        for aid in expired:
+            _recent_scans.pop(aid, None)
 
 
 @asynccontextmanager
@@ -114,8 +160,14 @@ async def lifespan(app: FastAPI):
     _agents.update(audit.load_all_agents())
     approvals.set_broadcast_callback(_ws_broadcast)
     cleanup_task = asyncio.create_task(_periodic_cleanup())
-    if _get_api_key():
+    api_key = _get_api_key()
+    admin_key = _get_admin_key()
+    if api_key:
         print("[AgentGate] Auth ON  — API key required on all endpoints")
+        if admin_key:
+            print("[AgentGate] Admin key configured — approval endpoints require X-Admin-Key")
+        else:
+            print("[AgentGate] WARNING — AGENTGATE_ADMIN_KEY not set; approval endpoints use API key (set it to prevent self-approval)")
     else:
         print("[AgentGate] Auth OFF — set AGENTGATE_API_KEY in .env to enable")
     if alerts_configured():
@@ -166,7 +218,17 @@ async def _security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "0"
     response.headers["Content-Security-Policy"] = _CSP
     response.headers["Server"] = "AgentGate"
+    # HSTS: instruct browsers to enforce HTTPS-only for 1 year.
+    # Only meaningful when deployed behind TLS — harmless in plain HTTP dev.
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+
+# ── Health ──────────────────────────────────────────────────────────────────
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
 
 
 # ── Agent Registration ──────────────────────────────────────────────────────
@@ -184,12 +246,17 @@ async def register_agent(request: Request, reg: AgentRegistration):
         raise HTTPException(status_code=400, detail=f"agent_id '{reg.agent_id}' is reserved")
     if reg.agent_id in _agents:
         raise HTTPException(status_code=409, detail=f"Agent '{reg.agent_id}' already registered")
-    if not reg.token:
-        reg.token = str(uuid.uuid4())
+    # Server always controls these fields — never trust client-supplied values.
+    # Allowing clients to set delegated_by/token would let anyone forge a delegation chain.
+    reg.delegated_by = None
+    reg.delegation_depth = 0
+    reg.scope_at_delegation = None
+    plaintext_token = str(uuid.uuid4())
+    reg.token = hash_token(plaintext_token)  # store hash, return plaintext
     _agents[reg.agent_id] = reg
     audit.save_agent(reg)
     await manager.broadcast({"type": "agents", "data": _agent_list()})
-    return {"agent_id": reg.agent_id, "token": reg.token, "status": "registered"}
+    return {"agent_id": reg.agent_id, "token": plaintext_token, "status": "registered"}
 
 
 @app.get("/agents", response_model=list, dependencies=[Depends(require_api_key)])
@@ -226,7 +293,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
 
     parent = _agents[req.parent_agent_id]
 
-    if parent.token and not hmac.compare_digest(req.parent_token, parent.token):
+    if parent.token and not hmac.compare_digest(hash_token(req.parent_token), parent.token):
         raise HTTPException(status_code=401, detail="Invalid parent agent token")
 
     if parent.delegation_depth >= MAX_DELEGATION_DEPTH:
@@ -242,6 +309,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
     if not valid:
         raise HTTPException(status_code=400, detail=f"Scope violation: {error}")
 
+    child_plaintext_token = str(uuid.uuid4())
     child = AgentRegistration(
         agent_id=req.child_agent_id,
         name=req.child_name,
@@ -251,7 +319,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
         delegated_by=req.parent_agent_id,
         delegation_depth=parent.delegation_depth + 1,
         scope_at_delegation=parent.authorized_resources + parent.authorized_actions,
-        token=str(uuid.uuid4()),
+        token=hash_token(child_plaintext_token),
     )
     _agents[child.agent_id] = child
     audit.save_agent(child)
@@ -263,7 +331,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
     )
     return {
         "agent_id": child.agent_id,
-        "token": child.token,
+        "token": child_plaintext_token,
         "delegation_depth": child.delegation_depth,
         "delegated_by": child.delegated_by,
         "status": "delegated",
@@ -324,8 +392,9 @@ def _normalize_resource(resource: str) -> str:
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("200/minute")
 async def authorize(request: Request, body: AuthorizationRequest):
-    if not body.request_id:
-        body.request_id = str(uuid.uuid4())
+    # Always generate server-side — client-supplied IDs would allow audit log
+    # manipulation and replay attacks via predictable or colliding request IDs.
+    body.request_id = str(uuid.uuid4())
 
     # Reject traversal attempts before normalization — check the decoded raw input
     # so encoded variants (%2e%2e, %252e%252e, etc.) are all caught.
@@ -339,14 +408,15 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Unknown agent → deny immediately
     if body.agent_id not in _agents:
         response = _build_unknown_agent_response(body)
-        audit.log_decision(response)
+        await asyncio.to_thread(audit.log_decision, response, False)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         return response
 
     agent = _agents[body.agent_id]
 
     # ── Token validation ──────────────────────────────────────────────────
-    if agent.token and not hmac.compare_digest(body.token or "", agent.token):
+    # agent.token is SHA-256(plaintext) — hash the incoming value before comparing.
+    if agent.token and not hmac.compare_digest(hash_token(body.token or ""), agent.token):
         raise HTTPException(status_code=401, detail="Invalid agent token")
     if agent.token_expires_at and time.time() > agent.token_expires_at:
         raise HTTPException(status_code=401, detail="Agent token expired — re-register")
@@ -355,7 +425,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
         response = _build_policy_blocked_response(body, agent, policy_match)
-        audit.log_decision(response)
+        await asyncio.to_thread(audit.log_decision, response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
             response.decision.value, body.agent_id,
@@ -365,8 +435,67 @@ async def authorize(request: Request, body: AuthorizationRequest):
         )
         return response
 
+    # ── Inline injection scan (when content is passed with the request) ────────
+    # Agents with processes_external_content=True can submit the document/tool
+    # output directly in the authorization request — no separate /scan call needed.
+    if agent.processes_external_content and body.content:
+        from core.injection_detector import scan_content as _scan_content
+        scan_result = await asyncio.to_thread(_scan_content, body.content, agent.declared_purpose)
+        _recent_scans[body.agent_id] = {
+            "score": scan_result.confidence,
+            "level": scan_result.level,
+            "ts": time.time(),
+        }
+        await manager.broadcast({
+            "type": "injection",
+            "data": {
+                "agent_id": body.agent_id,
+                "level": scan_result.level,
+                "confidence": scan_result.confidence,
+                "evidence": scan_result.evidence,
+                "timestamp": time.time(),
+            }
+        })
+        if scan_result.level == "injection":
+            from core.models import TrustBreakdown
+            from core.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
+            sensitivity = classify_resource_sensitivity(body.resource, body.action)
+            breakdown = TrustBreakdown(
+                identity_score=100, delegation_score=100,
+                purpose_alignment_score=100, behavioral_score=0,
+                resource_sensitivity=sensitivity,
+                final_score=0, threshold_required=SENSITIVITY_THRESHOLDS[sensitivity],
+            )
+            response = AuthorizationResponse(
+                request_id=body.request_id,
+                agent_id=body.agent_id,
+                action=body.action,
+                resource=body.resource,
+                decision=Decision.DENY,
+                trust_breakdown=breakdown,
+                explanation=f"Denied: injection detected in provided content (confidence {round(scan_result.confidence * 100)}%). {scan_result.evidence}",
+                attack_flags=["INJECTION_DETECTED", f"INJECTION_CONFIDENCE:{round(scan_result.confidence * 100)}%"],
+                injection_score=scan_result.confidence,
+            )
+            await asyncio.to_thread(audit.log_decision, response)
+            await manager.broadcast({"type": "decision", "data": response.model_dump()})
+            fire_alert(
+                "DENY", body.agent_id, body.action, body.resource,
+                response.explanation, response.attack_flags, 0,
+            )
+            return response
+
     # ── Trust scoring ──────────────────────────────────────────────────────
-    breakdown, flags = trust_engine.compute_trust(agent, body, _agents)
+    # Pull injection risk from a recent /scan call for this agent (if any)
+    injection_risk = 0.0
+    recent_scan = _recent_scans.get(body.agent_id)
+    if recent_scan and (time.time() - recent_scan["ts"]) < _SCAN_TTL and recent_scan["level"] != "clean":
+        injection_risk = recent_scan["score"]
+
+    # compute_trust calls SQLite (request history, baselines) — run in thread pool
+    breakdown, flags = await asyncio.to_thread(
+        trust_engine.compute_trust, agent, body, _agents, injection_risk
+    )
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
         agent.name, body.action, body.resource,
@@ -398,8 +527,9 @@ async def authorize(request: Request, body: AuthorizationRequest):
             trust_breakdown=breakdown,
             explanation=f"[PENDING HUMAN APPROVAL] {explanation}",
             attack_flags=flags,
+            injection_score=injection_risk if injection_risk > 0 else None,
         )
-        audit.log_decision(response)
+        await asyncio.to_thread(audit.log_decision, response)
         return response
 
     response = AuthorizationResponse(
@@ -411,9 +541,10 @@ async def authorize(request: Request, body: AuthorizationRequest):
         trust_breakdown=breakdown,
         explanation=explanation,
         attack_flags=flags,
+        injection_score=injection_risk if injection_risk > 0 else None,
     )
 
-    audit.log_decision(response)
+    await asyncio.to_thread(audit.log_decision, response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})
     fire_alert(
         decision.value, body.agent_id,
@@ -429,8 +560,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
 @app.post("/scan", response_model=ContentScanResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
 async def scan_content_endpoint(request: Request, body: ContentScanRequest):
-    from core.injection_detector import should_scan, scan_content
-    from core.trust_engine import classify_resource_sensitivity
+    from core.injection_detector import scan_content
 
     agent = _agents.get(body.agent_id)
     if agent is None:
@@ -440,21 +570,14 @@ async def scan_content_endpoint(request: Request, body: ContentScanRequest):
             scanned=False,
         )
 
-    # Use agent metadata for Layer 1 check (assume HIGH sensitivity for external content)
-    eligible = should_scan(
-        processes_external_content=agent.processes_external_content,
-        authorized_actions=agent.authorized_actions,
-        resource_sensitivity="HIGH",
-    )
-
-    if not eligible:
-        return ContentScanResponse(
-            level="clean", confidence=0.0,
-            evidence="Agent not eligible for content scanning (processes_external_content=False)",
-            scanned=False,
-        )
-
     result = scan_content(body.content, agent.declared_purpose)
+
+    # Cache result so /authorize can factor in injection risk from this scan
+    _recent_scans[body.agent_id] = {
+        "score": result.confidence,
+        "level": result.level,
+        "ts": time.time(),
+    }
 
     # Broadcast to dashboard
     await manager.broadcast({
@@ -575,7 +698,7 @@ async def get_decision(request: Request, decision_id: str):
     return a.to_dict()
 
 
-@app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_api_key)])
+@app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_admin_key)])
 @limiter.limit("20/minute")
 async def approve_decision(request: Request, decision_id: str):
     if not approvals.approve(decision_id):
@@ -584,7 +707,7 @@ async def approve_decision(request: Request, decision_id: str):
     return {"status": "approved", "decision_id": decision_id}
 
 
-@app.post("/decisions/{decision_id}/deny", dependencies=[Depends(require_api_key)])
+@app.post("/decisions/{decision_id}/deny", dependencies=[Depends(require_admin_key)])
 @limiter.limit("20/minute")
 async def deny_decision(request: Request, decision_id: str):
     if not approvals.deny(decision_id):
@@ -678,6 +801,14 @@ async def agent_baseline(request: Request, agent_id: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, key: str = Query(default="")):
+    # CSWSH protection: reject connections from untrusted origins.
+    # Browsers always send Origin; non-browser WebSocket clients (SDK, curl) don't,
+    # so we only block when Origin is present and not in the allow-list.
+    origin = ws.headers.get("origin", "")
+    if origin and origin not in _ALLOWED_ORIGINS:
+        await ws.close(code=4003)
+        return
+
     api_key = _get_api_key()
     if api_key is not None and not hmac.compare_digest(key, api_key):
         await ws.accept()

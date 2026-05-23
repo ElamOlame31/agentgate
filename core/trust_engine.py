@@ -1,6 +1,7 @@
 import fnmatch
 import posixpath
-import time
+import re
+import unicodedata
 import urllib.parse
 from core.models import (
     AgentRegistration, AuthorizationRequest,
@@ -17,6 +18,21 @@ SENSITIVITY_THRESHOLDS = {
     ResourceSensitivity.CRITICAL: 90.0,
 }
 
+# Actions that move data out of the system — always treated as CRITICAL sensitivity
+EXFILTRATION_ACTIONS = {"send", "email", "upload", "post", "forward", "export", "transfer", "publish"}
+
+# Secret patterns to detect in resource paths and justifications
+_SECRETS_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9]{20,}", re.IGNORECASE),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[A-Za-z0-9]{36}"),
+    re.compile(r"-----BEGIN\s+(RSA\s+|EC\s+)?PRIVATE KEY"),
+    re.compile(r"password\s*[=:]\s*\S{8,}", re.IGNORECASE),
+    re.compile(r"(?<!\w)secret\s*[=:]\s*\S{8,}", re.IGNORECASE),
+    re.compile(r"api[_-]?key\s*[=:]\s*\S{8,}", re.IGNORECASE),
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]{20,}=*"),
+]
+
 # Score weights
 W_IDENTITY = 0.25
 W_DELEGATION = 0.25
@@ -31,13 +47,52 @@ BASELINE_MIN_REQUESTS = 10
 BASELINE_SPIKE_MULTIPLIER = 2.5
 
 
-def classify_resource_sensitivity(resource: str) -> ResourceSensitivity:
-    r = resource.lower()
-    if any(kw in r for kw in ["salary", "payroll", "password", "cred", "secret", "private_key", "token"]):
+def _detect_secrets(text: str) -> bool:
+    # Normalize before matching so homoglyph variants don't bypass patterns
+    normalized = unicodedata.normalize("NFKC", text)
+    return any(p.search(normalized) for p in _SECRETS_PATTERNS)
+
+
+_CRITICAL_KEYWORDS = {
+    # Credentials and secrets
+    "salary", "payroll", "password", "passwd", "cred", "credential",
+    "secret", "private_key", "privatekey", "token", "api_key", "apikey",
+    # Cryptographic material
+    "id_rsa", "id_ed25519", "id_ecdsa", ".pem", ".p12", ".pfx", ".key",
+    "ssh", "tls_cert", "ssl_cert", "ca_bundle",
+    # Auth and identity
+    "mfa", "totp", "seed", "oauth", "jwt_secret", "session_secret",
+    # Env and config with secrets
+    ".env", ".env.prod", ".env.local", "vault", "keystore",
+    # Database dumps and backups
+    ".sql", ".dump", ".bak", ".backup", "db_export",
+    # Encryption keys
+    ".gpg", ".asc", "pgp", "keyring",
+}
+
+_HIGH_KEYWORDS = {
+    "confidential", "hr", "finance", "admin", "root", "audit",
+    "employee", "medical", "health", "pii", "gdpr", "compliance",
+    "legal", "contract", "nda", "executive", "board", "merger",
+    "acquisition", "strategy",
+}
+
+_MEDIUM_KEYWORDS = {
+    "internal", "personal", "user", "config", "configuration",
+    "settings", "profile", "account", "billing", "invoice",
+    "analytics", "roadmap",
+}
+
+
+def classify_resource_sensitivity(resource: str, action: str = "") -> ResourceSensitivity:
+    if action.lower() in EXFILTRATION_ACTIONS:
         return ResourceSensitivity.CRITICAL
-    if any(kw in r for kw in ["confidential", "hr", "finance", "admin", "root", "audit"]):
+    r = resource.lower()
+    if any(kw in r for kw in _CRITICAL_KEYWORDS):
+        return ResourceSensitivity.CRITICAL
+    if any(kw in r for kw in _HIGH_KEYWORDS):
         return ResourceSensitivity.HIGH
-    if any(kw in r for kw in ["internal", "personal", "user", "config"]):
+    if any(kw in r for kw in _MEDIUM_KEYWORDS):
         return ResourceSensitivity.MEDIUM
     return ResourceSensitivity.LOW
 
@@ -46,9 +101,9 @@ def score_identity(agent: AgentRegistration, request: AuthorizationRequest) -> t
     flags = []
     score = 100.0
 
-    if agent.token and request.token != agent.token:
-        flags.append("TOKEN_MISMATCH")
-        score -= 60.0
+    # Token validity is enforced at the API layer (401 before trust scoring).
+    # No secondary check here — agent.token is a SHA-256 hash and request.token
+    # is plaintext, so a direct comparison would always false-flag valid requests.
 
     # Check if action is in authorized actions
     if request.action.lower() not in [a.lower() for a in agent.authorized_actions]:
@@ -102,8 +157,14 @@ def score_delegation(
     if depth > 0:
         score -= depth * 15.0
 
+    # Orphan delegation — parent claimed but not present in registry
+    # Chain cannot be verified → unverifiable delegation is treated as a violation
+    if depth > 0 and agent.delegated_by and agent.delegated_by not in agents:
+        flags.append("ORPHAN_DELEGATION")
+        score = 0.0  # hard zero — unverifiable chain
+
     # Walk full chain — block if request exceeds any ancestor's scope
-    if depth > 0:
+    if depth > 0 and "ORPHAN_DELEGATION" not in flags:
         chain_ok, chain_error = check_chain_scope(
             agent.agent_id, request.action, request.resource, agents
         )
@@ -182,8 +243,22 @@ def compute_trust(
     agent: AgentRegistration,
     request: AuthorizationRequest,
     agents: dict = None,
+    injection_risk: float = 0.0,
 ) -> tuple[TrustBreakdown, list[str]]:
     all_flags = []
+
+    # Secrets in args — check each field independently AND their no-space concatenation.
+    # Space-joined combined string misses secrets split at the boundary (sk- in resource,
+    # remaining chars in justification). No-space concat closes that gap.
+    _just = request.justification or ""
+    if (_detect_secrets(request.resource) or
+            _detect_secrets(_just) or
+            _detect_secrets(request.resource + _just)):
+        all_flags.append("SECRETS_IN_ARGS")
+
+    # Exfiltration action flag
+    if request.action.lower() in EXFILTRATION_ACTIONS:
+        all_flags.append(f"EXFILTRATION_ACTION:{request.action}")
 
     id_score, id_flags = score_identity(agent, request)
     all_flags.extend(id_flags)
@@ -199,9 +274,14 @@ def compute_trust(
     )
 
     beh_score, beh_flags = score_behavioral(agent.agent_id, request.action)
+    # Penalize behavioral score when a prior injection scan flagged this agent
+    if injection_risk > 0.5:
+        penalty = min(50.0, (injection_risk - 0.5) * 100.0)
+        beh_score = max(0.0, beh_score - penalty)
+        beh_flags.append(f"PRIOR_INJECTION_RISK:{round(injection_risk * 100)}%")
     all_flags.extend(beh_flags)
 
-    sensitivity = classify_resource_sensitivity(request.resource)
+    sensitivity = classify_resource_sensitivity(request.resource, request.action)
     threshold = SENSITIVITY_THRESHOLDS[sensitivity]
 
     final = (
@@ -229,12 +309,20 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     score = breakdown.final_score
     threshold = breakdown.threshold_required
 
+    # Hard deny on secrets detected in resource path or justification
+    if any("SECRETS_IN_ARGS" in f for f in flags):
+        return Decision.DENY
+
     # Hard deny on critical velocity
     if any("CRITICAL_VELOCITY" in f for f in flags):
         return Decision.DENY
 
     # Hard deny on delegation chain violations — always, regardless of sensitivity
     if any("CHAIN_SCOPE_VIOLATION" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny on orphan delegation — parent claimed but not in registry
+    if any("ORPHAN_DELEGATION" in f for f in flags):
         return Decision.DENY
 
     # Hard deny when delegation depth exceeds the configured maximum

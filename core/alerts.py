@@ -2,11 +2,13 @@
 Alert dispatcher for AgentGate.
 
 Fires real-time notifications when AgentGate makes an ESCALATE or DENY decision.
-Supports ntfy.sh (push notifications, zero setup) and any generic webhook URL.
+Supports ntfy.sh (push notifications), Slack (Block Kit), Teams (Adaptive Cards),
+and any generic webhook URL.
 
 Configure in .env:
-    AGENTGATE_ALERT_TOPIC=agentgate-yourname   # ntfy.sh topic
-    AGENTGATE_WEBHOOK_URL=https://...          # optional custom webhook
+    AGENTGATE_ALERT_TOPIC=agentgate-yourname        # ntfy.sh topic
+    AGENTGATE_WEBHOOK_URL=https://hooks.slack.com/… # Slack incoming webhook
+    AGENTGATE_WEBHOOK_URL=https://…webhook.office…  # Teams incoming webhook
     AGENTGATE_ALERT_ON_ESCALATE=true
     AGENTGATE_ALERT_ON_DENY=true
 """
@@ -26,6 +28,87 @@ def _get_config():
         "webhook": os.getenv("AGENTGATE_WEBHOOK_URL", ""),
         "on_escalate": os.getenv("AGENTGATE_ALERT_ON_ESCALATE", "true").lower() == "true",
         "on_deny": os.getenv("AGENTGATE_ALERT_ON_DENY", "true").lower() == "true",
+    }
+
+
+def _slack_payload(decision: str, agent_id: str, action: str, resource: str,
+                   explanation: str, flags: list[str], score: float) -> dict:
+    """Build a Slack Block Kit message."""
+    is_deny = decision == "DENY"
+    color  = "#FF3B5C" if is_deny else "#FF9500"
+    emoji  = ":rotating_light:" if is_deny else ":warning:"
+    flag_str = ", ".join(flags) if flags else "none"
+
+    return {
+        "attachments": [{
+            "color": color,
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"{emoji} AgentGate {decision}: {agent_id}",
+                        "emoji": True,
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*Action*\n`{action} {resource}`"},
+                        {"type": "mrkdwn", "text": f"*Trust Score*\n`{score:.0f}/100`"},
+                        {"type": "mrkdwn", "text": f"*Agent ID*\n`{agent_id}`"},
+                        {"type": "mrkdwn", "text": f"*Flags*\n`{flag_str}`"},
+                    ],
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Reason*\n{explanation}"},
+                },
+                {"type": "divider"},
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": ":shield: Sent by *AgentGate PDP*"}],
+                },
+            ],
+        }]
+    }
+
+
+def _teams_payload(decision: str, agent_id: str, action: str, resource: str,
+                   explanation: str, flags: list[str], score: float) -> dict:
+    """Build a Microsoft Teams Adaptive Card payload."""
+    is_deny = decision == "DENY"
+    color   = "attention" if is_deny else "warning"
+    flag_str = ", ".join(flags) if flags else "none"
+
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": color,
+                        "text": f"AgentGate {decision}: {agent_id}",
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "Action",      "value": f"`{action} {resource}`"},
+                            {"title": "Trust Score", "value": f"{score:.0f}/100"},
+                            {"title": "Flags",       "value": flag_str},
+                            {"title": "Reason",      "value": explanation},
+                        ],
+                    },
+                ],
+            },
+        }],
     }
 
 
@@ -67,14 +150,22 @@ def _send(decision: str, agent_id: str, action: str, resource: str,
         except Exception as e:
             print(f"[AgentGate] Alert error: {e}", flush=True)
 
-    # ── Generic webhook ───────────────────────────────────────────────────
+    # ── Slack / Teams / Generic webhook ──────────────────────────────────
     if webhook:
         try:
-            httpx.post(webhook, json={
-                "decision": decision, "agent_id": agent_id,
-                "action": action, "resource": resource,
-                "score": score, "flags": flags, "explanation": explanation,
-            }, timeout=5.0)
+            if "hooks.slack.com" in webhook:
+                payload = _slack_payload(decision, agent_id, action, resource,
+                                         explanation, flags, score)
+            elif "webhook.office.com" in webhook or "webhook.microsoft.com" in webhook:
+                payload = _teams_payload(decision, agent_id, action, resource,
+                                          explanation, flags, score)
+            else:
+                payload = {
+                    "decision": decision, "agent_id": agent_id,
+                    "action": action, "resource": resource,
+                    "score": score, "flags": flags, "explanation": explanation,
+                }
+            httpx.post(webhook, json=payload, timeout=5.0)
         except Exception as e:
             print(f"[AgentGate] Webhook error: {e}", flush=True)
 
@@ -123,8 +214,17 @@ def fire_approval_request(request_id: str, agent_id: str, action: str,
         "Tags": "question,shield",
     }
     if public_url:
+        # Use the dedicated admin key for approval URLs — never expose the agent API key.
+        # If no admin key is set, fall back to API key with a warning logged at startup.
+        admin_key = os.getenv("AGENTGATE_ADMIN_KEY", "").strip()
         api_key = os.getenv("AGENTGATE_API_KEY", "").strip()
-        key_suffix = f"?key={api_key}" if api_key else ""
+        auth_key = admin_key or api_key
+        if admin_key:
+            key_suffix = f"?admin_key={auth_key}"
+        elif auth_key:
+            key_suffix = f"?key={auth_key}"
+        else:
+            key_suffix = ""
         headers["Actions"] = (
             f"http, Approve, {public_url}/decisions/{request_id}/approve{key_suffix}, method=POST, headers.ngrok-skip-browser-warning=true, clear=true; "
             f"http, Deny, {public_url}/decisions/{request_id}/deny{key_suffix}, method=POST, headers.ngrok-skip-browser-warning=true, clear=true"

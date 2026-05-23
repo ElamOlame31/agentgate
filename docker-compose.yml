@@ -2,17 +2,21 @@ services:
   agentgate:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - agentgate_data:/app/data
     environment:
+      - AGENTGATE_HOST=0.0.0.0
       - AGENTGATE_PORT=8000
+      - AGENTGATE_ENV=${AGENTGATE_ENV:-production}
+      - AGENTGATE_API_KEY=${AGENTGATE_API_KEY:?Set AGENTGATE_API_KEY in your .env file}
+      - AGENTGATE_ADMIN_KEY=${AGENTGATE_ADMIN_KEY:-}
       - AGENTGATE_ALERT_TOPIC=${AGENTGATE_ALERT_TOPIC:-}
       - AGENTGATE_WEBHOOK_URL=${AGENTGATE_WEBHOOK_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/audit/stats')"]
+      test: ["CMD", "python", "-c", "import httpx; assert httpx.get('http://localhost:8000/healthz').status_code == 200"]
       interval: 30s
       timeout: 10s
       retries: 3

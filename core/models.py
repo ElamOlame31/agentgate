@@ -41,6 +41,7 @@ class AuthorizationRequest(BaseModel):
     token: Optional[str] = None
     request_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
+    content: Optional[str] = Field(default=None, max_length=20_000)
 
 
 class ContentScanRequest(BaseModel):
@@ -76,3 +77,4 @@ class AuthorizationResponse(BaseModel):
     explanation: str
     timestamp: float = Field(default_factory=time.time)
     attack_flags: List[str] = []
+    injection_score: Optional[float] = None  # set when a prior /scan result exists for this agent

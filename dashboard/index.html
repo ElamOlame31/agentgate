@@ -867,6 +867,10 @@ function addFeedItem(data) {
   const dotCls = dec==='PERMIT'?'permit':dec==='DENY'?'deny':'escalate';
   const reason = data.explanation || '';
 
+  const injPct = data.injection_score != null ? Math.round(data.injection_score * 100) : null;
+  const injBadge = injPct != null
+    ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.25);white-space:nowrap;">INJ ${injPct}%</span>`
+    : '';
   row.className = 'req-row' + (dec==='DENY' ? ' blocked' : '');
   row.innerHTML = `
     <span class="req-dot ${dotCls}"></span>
@@ -874,6 +878,7 @@ function addFeedItem(data) {
     <span class="req-agent" title="${esc(data.agent_id)}">${esc(data.agent_id)}</span>
     <span class="req-path"><span class="action">${esc(data.action.toUpperCase())}</span> ${esc(data.resource)}</span>
     <span class="score-badge ${scoreClass(score)}">${scoreLabel(score)} ${score}</span>
+    ${injBadge}
     <span class="req-reason" title="${esc(reason)}">${esc(reason)}</span>
   `;
   feed.insertBefore(row, feed.firstChild);
@@ -1018,10 +1023,14 @@ function updateLastDecision(data) {
     ['PURPOSE',   tb.purpose_alignment_score],
     ['BEHAVIOR',  tb.behavioral_score],
   ];
+  if (data.injection_score != null) {
+    dims.push(['INJECTION', Math.round(data.injection_score * 100)]);
+  }
   const barsHtml = dims.map(([label, score]) => {
-    const bc = scoreBarColor(score);
+    const isInj = label === 'INJECTION';
+    const bc = isInj ? 'var(--red)' : scoreBarColor(score);
     return `
-      <span style="font-size:9px;letter-spacing:.06em;color:var(--text3);white-space:nowrap;">${label}</span>
+      <span style="font-size:9px;letter-spacing:.06em;color:${isInj ? 'var(--red)' : 'var(--text3)'};white-space:nowrap;">${label}</span>
       <div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden;align-self:center;">
         <div style="height:100%;width:${score}%;background:${bc};border-radius:2px;transition:width .4s ease;"></div>
       </div>
@@ -1261,7 +1270,7 @@ function renderDelegationTree(agents) {
     const score    = getAgentScore(agent.agent_id);
     const dotColor = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--green)';
     const barCol   = score < 40 ? 'var(--red)' : score < 70 ? 'var(--orange)' : 'var(--cyan)';
-    const label    = agent.agent_id.replace('multiagent_', '');
+    const label    = esc(agent.agent_id.replace('multiagent_', ''));
     const depthTag = depth > 0
       ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);">D${depth}</span>`
       : `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:var(--cyan-dim);color:var(--cyan);">ROOT</span>`;
@@ -1270,7 +1279,7 @@ function renderDelegationTree(agents) {
     const scopeTip  = `Resources: ${(agent.authorized_resources||[]).map(esc).join(', ')} | Actions: ${(agent.authorized_actions||[]).map(esc).join(', ')}`;
 
     return `
-      <div class="tree-node depth-${depth}" id="tnode-${agent.agent_id}">
+      <div class="tree-node depth-${depth}" id="tnode-${esc(agent.agent_id)}">
         ${connector}
         <div class="tree-card" title="${scopeTip}">
           <span style="width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 6px ${dotColor};flex-shrink:0;"></span>
@@ -1295,7 +1304,7 @@ function renderDelegationTree(agents) {
 }
 
 function flashChainViolation(agent_id) {
-  const node = document.getElementById(`tnode-${agent_id}`);
+  const node = document.getElementById(`tnode-${esc(agent_id)}`);
   if (!node) return;
   const card = node.querySelector('.tree-card');
   if (!card) return;

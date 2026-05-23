@@ -1,0 +1,58 @@
+# AgentGate Policy Template: SOC 2 Type II Compliance
+# Applies to: AI agents operating in SOC 2 audited environments
+# Controls: CC6 (Logical Access), CC7 (System Operations), CC9 (Risk Mitigation)
+
+name: SOC 2 Type II
+description: >
+  Enforces least-privilege access, full audit trail, and human-in-the-loop controls
+  required for SOC 2 Type II certification of AI agent operations.
+
+policies:
+  - name: "SOC2 — Block all credential and secret access"
+    rule: "Agent must never read files containing credentials, secrets, or private keys"
+    applies_to: "*"
+
+  - name: "SOC2 — Block PII access without explicit authorization"
+    rule: "Agent must not access personally identifiable information unless the agent's declared purpose explicitly includes PII processing"
+    applies_to: "*"
+
+  - name: "SOC2 — Require human approval for all delete operations"
+    rule: "Any delete or destroy action must be escalated for human approval regardless of trust score"
+    applies_to: "*"
+
+  - name: "SOC2 — Block access to audit logs by non-auditor agents"
+    rule: "Agent must not read, modify or delete audit logs unless its declared purpose is audit or compliance"
+    applies_to: "*"
+
+  - name: "SOC2 — Restrict production database access"
+    rule: "Agent must not access production database files or connection strings unless explicitly authorized"
+    applies_to: "*"
+
+  - name: "SOC2 — Block bulk data export"
+    rule: "Agent must not export, download, or transfer more than 100 records in a single operation without human approval"
+    applies_to: "*"
+
+  - name: "SOC2 — Require justification for sensitive resource access"
+    rule: "Agent must provide a specific business justification when accessing files in /confidential/, /hr/, /finance/, or /legal/"
+    applies_to: "*"
+
+sensitivity_overrides:
+  # Raise sensitivity thresholds for common SOC 2 concern areas
+  - pattern: "/confidential/*"
+    level: CRITICAL
+  - pattern: "/hr/*"
+    level: HIGH
+  - pattern: "/finance/*"
+    level: HIGH
+  - pattern: "/audit/*"
+    level: CRITICAL
+  - pattern: "/logs/*"
+    level: HIGH
+  - pattern: "*.env"
+    level: CRITICAL
+  - pattern: "*.pem"
+    level: CRITICAL
+
+alert_on:
+  - DENY
+  - ESCALATE

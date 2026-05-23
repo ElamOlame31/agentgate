@@ -1,0 +1,59 @@
+# AgentGate Policy Template: HIPAA Compliance
+# Applies to: AI agents in healthcare environments handling PHI
+# Controls: Privacy Rule, Security Rule, Breach Notification Rule
+
+name: HIPAA
+description: >
+  Enforces strict controls on Protected Health Information (PHI) access by AI agents.
+  Required for any AI system operating in a HIPAA-covered entity or business associate.
+
+policies:
+  - name: "HIPAA — Block PHI access without clinical purpose"
+    rule: "Agent must not access patient records, medical histories, diagnoses, or treatment data unless its declared purpose explicitly includes patient care or clinical data processing"
+    applies_to: "*"
+
+  - name: "HIPAA — Prohibit PHI export to external systems"
+    rule: "Agent must never write, copy, or transmit PHI to external URLs, third-party APIs, or storage outside the authorized environment"
+    applies_to: "*"
+
+  - name: "HIPAA — Minimum necessary standard"
+    rule: "Agent must only access the minimum PHI necessary for its declared purpose — bulk access to patient databases is prohibited"
+    applies_to: "*"
+
+  - name: "HIPAA — Require human approval for PHI bulk operations"
+    rule: "Any operation accessing more than one patient record must be escalated for human approval"
+    applies_to: "*"
+
+  - name: "HIPAA — Block access to mental health and substance abuse records"
+    rule: "Agent must never access mental health records, substance abuse treatment records, or HIV/AIDS status without explicit clinical authorization"
+    applies_to: "*"
+
+  - name: "HIPAA — Prohibit de-identified data re-identification"
+    rule: "Agent must not attempt to re-identify de-identified patient data by cross-referencing multiple datasets"
+    applies_to: "*"
+
+  - name: "HIPAA — Block insurance and billing data outside billing context"
+    rule: "Agent must not access insurance claims, billing records, or payment information unless its purpose is explicitly billing or revenue cycle management"
+    applies_to: "*"
+
+sensitivity_overrides:
+  - pattern: "/patients/*"
+    level: CRITICAL
+  - pattern: "/medical/*"
+    level: CRITICAL
+  - pattern: "/phi/*"
+    level: CRITICAL
+  - pattern: "/ehr/*"
+    level: CRITICAL
+  - pattern: "/prescriptions/*"
+    level: CRITICAL
+  - pattern: "/lab-results/*"
+    level: HIGH
+  - pattern: "/billing/*"
+    level: HIGH
+  - pattern: "/insurance/*"
+    level: HIGH
+
+alert_on:
+  - DENY
+  - ESCALATE

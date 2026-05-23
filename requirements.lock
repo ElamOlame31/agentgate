@@ -1,0 +1,72 @@
+# AgentGate dependency lockfile — generated 2026-05-21
+# Pin these exact versions for reproducible, supply-chain-safe installs:
+#   pip install -r requirements.lock
+#
+# To update: pip install -r requirements.txt && pip freeze > requirements.lock
+# Then review the diff before committing.
+
+# ── Core server ──────────────────────────────────────────────────────────────
+fastapi==0.136.0
+starlette==1.0.0
+uvicorn==0.44.0
+httptools==0.7.1
+watchfiles==1.1.1
+websockets==13.1
+slowapi==0.1.9
+python-dotenv==1.0.1
+
+# ── Data / validation ────────────────────────────────────────────────────────
+pydantic==2.13.2
+pydantic_core==2.46.2
+annotated-types==0.7.0
+
+# ── AI / ML ──────────────────────────────────────────────────────────────────
+sentence-transformers==5.4.1
+transformers==5.5.4
+torch==2.10.0
+tokenizers==0.22.2
+safetensors==0.7.0
+huggingface_hub==1.11.0
+numpy==2.0.0
+scikit-learn==1.7.2
+scipy==1.16.2
+joblib==1.5.2
+threadpoolctl==3.6.0
+
+# ── Anthropic SDK ────────────────────────────────────────────────────────────
+anthropic==0.96.0
+jiter==0.14.0
+
+# ── LangChain integration ────────────────────────────────────────────────────
+langchain-anthropic==1.4.1
+langchain-core==1.3.0
+langsmith==0.7.32
+jsonpatch==1.33
+jsonpointer==3.0.0
+orjson==3.11.8
+
+# ── HTTP / networking ────────────────────────────────────────────────────────
+httpx==0.28.1
+requests==2.32.3
+urllib3==2.2.3
+certifi==2024.8.30
+charset-normalizer==3.4.0
+idna==3.10
+h11==0.16.0
+
+# ── Reporting ────────────────────────────────────────────────────────────────
+fpdf2==2.8.7
+rich==14.2.0
+pillow==11.0.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+anyio==4.12.1
+sniffio==1.3.1
+distro==1.9.0
+click==8.3.2
+tqdm==4.67.3
+regex==2026.4.4
+packaging==24.2
+filelock==3.20.3
+PyYAML==6.0.3
+typing_extensions==4.15.0

@@ -17,6 +17,7 @@ Returns: InjectionResult(level, confidence, evidence)
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from core.purpose_engine import _get_model  # reuse already-loaded model
@@ -143,6 +144,10 @@ def scan_content(content: str, declared_purpose: str) -> InjectionResult:
     """
     if not content or len(content.strip()) < 10:
         return InjectionResult("clean", 0.0, "content too short to analyze")
+
+    # Normalize Unicode so homoglyph substitutions (Cyrillic і, full-width chars, etc.)
+    # don't bypass keyword patterns. NFKC collapses compatibility variants to canonical form.
+    content = unicodedata.normalize("NFKC", content)
 
     # Stage 1 — keyword scan (fast)
     for pattern in COMPILED_PATTERNS:

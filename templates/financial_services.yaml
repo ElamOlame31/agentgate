@@ -1,0 +1,60 @@
+# AgentGate Policy Template: Financial Services
+# Applies to: AI agents in banking, insurance, investment, or fintech environments
+# Controls: SOX, PCI-DSS, FINRA, MiFID II relevant AI agent controls
+
+name: Financial Services
+description: >
+  Enforces controls for AI agents operating in regulated financial environments.
+  Covers insider trading prevention, customer financial data protection, payment
+  card data isolation, and trade surveillance requirements.
+
+policies:
+  - name: "FinServ — Block insider information access"
+    rule: "Agent must not access non-public information about mergers, acquisitions, earnings, or material corporate events unless it is explicitly a compliance or legal agent"
+    applies_to: "*"
+
+  - name: "FinServ — Prohibit PCI data access by non-payment agents"
+    rule: "Agent must not access credit card numbers, CVV codes, bank account numbers, or payment credentials unless its declared purpose is explicitly payment processing"
+    applies_to: "*"
+
+  - name: "FinServ — Require human approval for transactions above threshold"
+    rule: "Any agent action that initiates, modifies, or cancels a financial transaction above $10,000 must be escalated for human approval"
+    applies_to: "*"
+
+  - name: "FinServ — Block customer portfolio data outside advisory context"
+    rule: "Agent must not access individual customer portfolio holdings, trade history, or investment positions unless its declared purpose is portfolio management or financial advisory"
+    applies_to: "*"
+
+  - name: "FinServ — Audit trail — no deletion of financial records"
+    rule: "Agent must never delete financial records, transaction logs, or compliance documentation"
+    applies_to: "*"
+
+  - name: "FinServ — Model risk — require justification for risk model access"
+    rule: "Agent must not read or modify risk models, pricing models, or valuation models without a specific business justification"
+    applies_to: "*"
+
+  - name: "FinServ — Sanctions screening — block transfers to sanctioned entities"
+    rule: "Agent must not initiate or process any payment or transfer to entities on OFAC, EU, or UN sanctions lists"
+    applies_to: "*"
+
+sensitivity_overrides:
+  - pattern: "/trading/*"
+    level: CRITICAL
+  - pattern: "/positions/*"
+    level: CRITICAL
+  - pattern: "/payments/*"
+    level: CRITICAL
+  - pattern: "/cards/*"
+    level: CRITICAL
+  - pattern: "/accounts/*"
+    level: HIGH
+  - pattern: "/risk-models/*"
+    level: HIGH
+  - pattern: "/compliance/*"
+    level: HIGH
+  - pattern: "/kyc/*"
+    level: HIGH
+
+alert_on:
+  - DENY
+  - ESCALATE

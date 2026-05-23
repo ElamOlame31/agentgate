@@ -185,12 +185,15 @@ class TestIdentityScore:
         assert score == 100.0
         assert flags == []
 
-    def test_token_mismatch(self):
+    def test_token_not_checked_in_identity_score(self):
+        # Since H2, token validation is enforced at the API layer (401 before trust
+        # scoring). score_identity() no longer checks the token — a wrong token
+        # would never reach this function in production (server returns 401 first).
         agent = _agent(token="correct-tok")
         req = _req(token="wrong-tok")
         score, flags = score_identity(agent, req)
-        assert "TOKEN_MISMATCH" in flags
-        assert score <= 40.0
+        assert "TOKEN_MISMATCH" not in flags
+        assert score == 100.0
 
     def test_unauthorized_action(self):
         agent = _agent(actions=["read"])
@@ -369,12 +372,12 @@ class TestDelegationScore:
         assert len(chain) <= 3
 
     def test_get_chain_missing_parent(self):
+        from core.delegation import ChainBrokenError
         child = _agent(agent_id="orphan", delegated_by="ghost", delegation_depth=1)
         agents = {"orphan": child}
-        chain = get_chain("orphan", agents)
-        # Ghost parent not in agents dict — chain walk stops
-        assert len(chain) == 1
-        assert chain[0].agent_id == "orphan"
+        # Fail closed — missing ancestor must raise, never silently skip
+        with pytest.raises(ChainBrokenError, match="ghost"):
+            get_chain("orphan", agents)
 
     def test_chain_summary(self):
         root = _agent(agent_id="root")
@@ -648,9 +651,12 @@ class TestComputeTrust:
         decision = make_decision(breakdown, flags)
         assert decision == Decision.DENY
 
-    def test_token_mismatch_sensitive_resource_deny(self):
-        agent = _agent(token="correct", resources=["/confidential/*"], actions=["read"])
-        req = _req(token="wrong", resource="/confidential/data.csv")
+    def test_wrong_token_rejected_at_api_layer_not_trust(self):
+        # Since H2, wrong tokens are rejected at the server (401) before trust scoring.
+        # This test verifies that an agent accessing an out-of-scope resource is denied
+        # on identity grounds alone (no token penalty needed).
+        agent = _agent(resources=["/reports/*"], actions=["read"])
+        req = _req(resource="/confidential/salary.xlsx")
         breakdown, flags = compute_trust(agent, req, {})
         decision = make_decision(breakdown, flags)
         assert decision == Decision.DENY
@@ -1712,10 +1718,10 @@ class TestAPISecurityEndpoints:
     def test_delegate_duplicate_child_returns_409(self, api_client, clear_rate_limiter):
         parent_id = f"par3_{uuid.uuid4().hex[:8]}"
         child_id  = f"child_{uuid.uuid4().hex[:8]}"
-        _reg(api_client, parent_id, token="tok-dup2")
+        parent_tok = _reg(api_client, parent_id).json()["token"]
         r1 = api_client.post("/agents/delegate", json={
             "parent_agent_id": parent_id,
-            "parent_token": "tok-dup2",
+            "parent_token": parent_tok,
             "child_agent_id": child_id,
             "child_name": "Child",
             "child_declared_purpose": "Testing",
@@ -1725,7 +1731,7 @@ class TestAPISecurityEndpoints:
         assert r1.status_code == 200
         r2 = api_client.post("/agents/delegate", json={
             "parent_agent_id": parent_id,
-            "parent_token": "tok-dup2",
+            "parent_token": parent_tok,
             "child_agent_id": child_id,
             "child_name": "Child Again",
             "child_declared_purpose": "Testing again",

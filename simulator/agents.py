@@ -26,10 +26,14 @@ _API_KEY = os.getenv("AGENTGATE_API_KEY", "")
 _HEADERS = {"X-API-Key": _API_KEY} if _API_KEY else {}
 
 
-def _register(agent_data: dict) -> str:
+def _register(agent_data: dict) -> tuple[str, str]:
+    """Returns (agent_id, token). agent_id may differ from input if a collision is resolved."""
     r = httpx.post(f"{AGENTGATE_URL}/agents/register", json=agent_data, headers=_HEADERS)
+    if r.status_code == 409:
+        agent_data["agent_id"] = agent_data["agent_id"] + "_" + uuid.uuid4().hex[:6]
+        r = httpx.post(f"{AGENTGATE_URL}/agents/register", json=agent_data, headers=_HEADERS)
     r.raise_for_status()
-    return r.json()["token"]
+    return agent_data["agent_id"], r.json()["token"]
 
 
 def _authorize(agent_id: str, token: str, action: str, resource: str, justification: str = "") -> dict:
@@ -41,7 +45,7 @@ def _authorize(agent_id: str, token: str, action: str, resource: str, justificat
         "justification": justification,
         "request_id": str(uuid.uuid4()),
     }
-    r = httpx.post(f"{AGENTGATE_URL}/authorize", json=payload, headers=_HEADERS)
+    r = httpx.post(f"{AGENTGATE_URL}/authorize", json=payload, headers=_HEADERS, timeout=60.0)
     r.raise_for_status()
     return r.json()
 
@@ -60,7 +64,7 @@ def _print_result(result: dict, label: str = ""):
         f"score=[bold]{score}[/bold] "
         f"flags=[yellow]{flag_str}[/yellow]"
     )
-    console.print(f"  [italic dim]  ↳ {result['explanation']}[/italic dim]")
+    console.print(f"  [italic dim]  -> {result['explanation']}[/italic dim]")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -71,7 +75,7 @@ def run_good_agent():
     console.rule("[bold green]SCENARIO 1 — Legitimate Agent[/bold green]")
     console.print("A document summarizer reading reports it is authorized to read.\n")
 
-    token = _register({
+    agent_id, token = _register({
         "agent_id": "good_agent_001",
         "name": "DocumentSummarizer",
         "declared_purpose": "Summarize and analyze quarterly reports in the /reports folder",
@@ -86,7 +90,7 @@ def run_good_agent():
         ("read", "/reports/archive/q1_2025.pdf", "User requested historical comparison"),
     ]
     for action, resource, justification in calls:
-        result = _authorize("good_agent_001", token, action, resource, justification)
+        result = _authorize(agent_id, token, action, resource, justification)
         _print_result(result, f"{action} {resource}")
         time.sleep(0.3)
 
@@ -104,7 +108,7 @@ def run_privilege_escalation():
     )
 
     # Parent agent — legitimate
-    token_a = _register({
+    agent_id_a, token_a = _register({
         "agent_id": "parent_agent_A",
         "name": "ReportManager",
         "declared_purpose": "Manage and organize reports in /reports",
@@ -114,40 +118,40 @@ def run_privilege_escalation():
     })
 
     # Child agent — delegated, but scope NOT properly attenuated
-    token_b = _register({
+    agent_id_b, token_b = _register({
         "agent_id": "child_agent_B",
         "name": "SubAgent-B",
         "declared_purpose": "Assist ReportManager with report filing",
         "authorized_resources": ["/reports/*"],
         "authorized_actions": ["read", "write", "delete"],  # not narrowed!
-        "delegated_by": "parent_agent_A",
+        "delegated_by": agent_id_a,
         "delegation_depth": 1,
-        "scope_at_delegation": ["read", "write", "delete"],  # same scope = no attenuation
+        "scope_at_delegation": ["read", "write", "delete"],
     })
 
     # Sub-sub agent — depth 2
-    token_c = _register({
+    agent_id_c, token_c = _register({
         "agent_id": "sub_sub_agent_C",
         "name": "SubSubAgent-C",
         "declared_purpose": "Deep file operations",
         "authorized_resources": ["/reports/*", "/confidential/*"],  # scope ESCALATION
         "authorized_actions": ["read", "write", "delete", "admin"],
-        "delegated_by": "child_agent_B",
+        "delegated_by": agent_id_b,
         "delegation_depth": 2,
-        "scope_at_delegation": ["read", "write", "delete"],  # escalated beyond parent!
+        "scope_at_delegation": ["read", "write", "delete"],
     })
 
-    console.print("[yellow]→ Child agent tries to access confidential salary data:[/yellow]")
-    r = _authorize("child_agent_B", token_b, "read", "/confidential/salary.xlsx", "Need for report reconciliation")
-    _print_result(r, "child_agent_B READ /confidential/salary.xlsx")
+    console.print("[yellow]-> Child agent tries to access confidential salary data:[/yellow]")
+    r = _authorize(agent_id_b, token_b, "read", "/confidential/salary.xlsx", "Need for report reconciliation")
+    _print_result(r, f"{agent_id_b} READ /confidential/salary.xlsx")
 
-    console.print("\n[yellow]→ Sub-sub agent with scope escalation tries to delete:[/yellow]")
-    r = _authorize("sub_sub_agent_C", token_c, "delete", "/confidential/salary.xlsx", "Cleanup task")
-    _print_result(r, "sub_sub_agent_C DELETE /confidential/salary.xlsx")
+    console.print("\n[yellow]-> Sub-sub agent with scope escalation tries to delete:[/yellow]")
+    r = _authorize(agent_id_c, token_c, "delete", "/confidential/salary.xlsx", "Cleanup task")
+    _print_result(r, f"{agent_id_c} DELETE /confidential/salary.xlsx")
 
-    console.print("\n[yellow]→ Child agent tries admin operation it was never given:[/yellow]")
-    r = _authorize("child_agent_B", token_b, "admin", "/reports/", "System maintenance")
-    _print_result(r, "child_agent_B ADMIN /reports/")
+    console.print("\n[yellow]-> Child agent tries admin operation it was never given:[/yellow]")
+    r = _authorize(agent_id_b, token_b, "admin", "/reports/", "System maintenance")
+    _print_result(r, f"{agent_id_b} ADMIN /reports/")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -162,7 +166,7 @@ def run_purpose_drift():
         "its behavior is completely inconsistent with its declared purpose.\n"
     )
 
-    token = _register({
+    agent_id, token = _register({
         "agent_id": "drifting_agent_003",
         "name": "DocumentSummarizer-Pro",
         "declared_purpose": "Read and summarize PDF documents for executive team",
@@ -180,7 +184,7 @@ def run_purpose_drift():
     ]
 
     for action, resource, justification in calls:
-        result = _authorize("drifting_agent_003", token, action, resource, justification)
+        result = _authorize(agent_id, token, action, resource, justification)
         _print_result(result, f"{action} {resource}")
         time.sleep(0.3)
 
@@ -196,7 +200,7 @@ def run_velocity_attack():
         "Traditional auth passes every single one. AgentGate detects and degrades trust.\n"
     )
 
-    token = _register({
+    agent_id, token = _register({
         "agent_id": "velocity_agent_004",
         "name": "DataExporter",
         "declared_purpose": "Export monthly report summaries",
@@ -205,10 +209,10 @@ def run_velocity_attack():
         "delegation_depth": 0,
     })
 
-    console.print(f"[yellow]→ Firing 50 rapid requests...[/yellow]")
+    console.print(f"[yellow]-> Firing 50 rapid requests...[/yellow]")
     results = []
     for i in range(50):
-        r = _authorize("velocity_agent_004", token, "read", f"/reports/file_{i:03d}.pdf", "Monthly export")
+        r = _authorize(agent_id, token, "read", f"/reports/file_{i:03d}.pdf", "Monthly export")
         results.append(r["decision"])
 
     permits = results.count("PERMIT")

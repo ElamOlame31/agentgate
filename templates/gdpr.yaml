@@ -1,0 +1,56 @@
+# AgentGate Policy Template: GDPR Compliance
+# Applies to: AI agents processing personal data of EU residents
+# Controls: Articles 5, 6, 9, 17, 25 (Data minimisation, Purpose limitation, Right to erasure)
+
+name: GDPR
+description: >
+  Enforces GDPR principles for AI agents: lawful basis for processing, purpose limitation,
+  data minimisation, and special category protections. Required for any AI agent handling
+  personal data of EU/EEA residents.
+
+policies:
+  - name: "GDPR — Purpose limitation"
+    rule: "Agent must only process personal data for the specific purpose declared at registration. Processing personal data for any secondary purpose not stated in declared_purpose is prohibited."
+    applies_to: "*"
+
+  - name: "GDPR — Block special category data without explicit authorization"
+    rule: "Agent must never access racial or ethnic origin, political opinions, religious beliefs, trade union membership, genetic data, biometric data, health data, or sexual orientation data unless its declared purpose explicitly includes processing of special category data"
+    applies_to: "*"
+
+  - name: "GDPR — Data minimisation — no bulk personal data access"
+    rule: "Agent must not access bulk lists of personal data. Access must be limited to what is strictly necessary for the current task."
+    applies_to: "*"
+
+  - name: "GDPR — Right to erasure — require human approval for deletion"
+    rule: "Any deletion of personal data must be escalated to a human reviewer to verify the erasure request is legitimate"
+    applies_to: "*"
+
+  - name: "GDPR — Prohibit cross-border transfer without adequacy"
+    rule: "Agent must not transfer personal data to storage or APIs located outside the EEA unless an adequacy decision or appropriate safeguard is in place"
+    applies_to: "*"
+
+  - name: "GDPR — Children's data — block access without parental consent flag"
+    rule: "Agent must not process data belonging to individuals under 16 years of age unless the record is explicitly marked as having valid parental consent"
+    applies_to: "*"
+
+  - name: "GDPR — Profiling restriction"
+    rule: "Agent must not create profiles, infer attributes, or make automated decisions about individuals without explicit authorization in its declared purpose"
+    applies_to: "*"
+
+sensitivity_overrides:
+  - pattern: "/users/*"
+    level: HIGH
+  - pattern: "/customers/*"
+    level: HIGH
+  - pattern: "/personal-data/*"
+    level: CRITICAL
+  - pattern: "/gdpr/*"
+    level: CRITICAL
+  - pattern: "/profiles/*"
+    level: HIGH
+  - pattern: "/analytics/user*"
+    level: HIGH
+
+alert_on:
+  - DENY
+  - ESCALATE
