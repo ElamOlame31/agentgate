@@ -31,6 +31,15 @@ class AgentRegistration(BaseModel):
     token_expires_at: Optional[float] = None
     processes_external_content: bool = False
     requires_human_approval: bool = False
+    # Behavioral contract — hard limits declared at registration time.
+    # Violations produce CONTRACT_* flags that always result in DENY, regardless of trust score.
+    max_requests_per_minute: Optional[int] = Field(default=None, ge=1)
+    allowed_time_windows: Optional[List[str]] = Field(default=None)  # e.g. ["09:00-17:00"] UTC
+    max_consecutive_same_action: Optional[int] = Field(default=None, ge=1)
+    # Trust ceiling — delegated agents cannot exceed their parent's trust score.
+    # Set at delegation time. Prevents trust-washing: a low-trust parent cannot spawn
+    # a child that earns a higher score than the parent could ever reach.
+    trust_ceiling: Optional[float] = Field(default=None, ge=0.0, le=100.0)
 
 
 class AuthorizationRequest(BaseModel):

@@ -28,13 +28,24 @@ def _cosine(a: tuple, b: tuple) -> float:
 
 def score_purpose_alignment(declared_purpose: str, action: str, resource: str, justification: str = "") -> float:
     """
-    Returns 0-100. How well does (action + resource + justification) align
-    with the agent's declared purpose?
+    Returns 0-100. How well does the action+resource align with the agent's declared purpose?
+
+    Justification is attacker-controlled text — weighting it equally with action+resource allows
+    an adversary to inflate scores by writing a justification that mirrors the declared purpose.
+    We score action+resource (objective signal) at 85% and justification (subjective signal)
+    at 15% to preserve its diagnostic value without making it exploitable as a bypass.
     """
-    request_text = f"{action} {resource} {justification}".strip()
     purpose_vec = _embed(declared_purpose)
-    request_vec = _embed(request_text)
-    similarity = _cosine(purpose_vec, request_vec)
+    ar_vec = _embed(f"{action} {resource}")
+    ar_similarity = _cosine(purpose_vec, ar_vec)
+
+    if justification and justification.strip():
+        just_vec = _embed(justification.strip())
+        just_similarity = _cosine(purpose_vec, just_vec)
+        similarity = ar_similarity * 0.85 + just_similarity * 0.15
+    else:
+        similarity = ar_similarity
+
     # Similarity is -1 to 1; map to 0-100
     score = (similarity + 1) / 2 * 100
     return round(score, 2)

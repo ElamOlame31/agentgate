@@ -19,6 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from core.models import AgentRegistration, AuthorizationRequest, Decision, ResourceSensitivity
+from core.kill_chain import (
+    analyze_kill_chain, BULK_READ_THRESHOLD, SWEEP_PREFIX_THRESHOLD,
+)
 from core.trust_engine import (
     _detect_secrets,
     classify_resource_sensitivity,
@@ -866,3 +869,412 @@ class TestBugFixRegressions:
             f"REGRESSION: re-registered agent inherited velocity history. flags={data['attack_flags']}"
         )
         api_client.delete(f"/agents/{uid}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. BEHAVIORAL CONTRACTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBehavioralContracts:
+    """
+    Agents that declare behavioral contracts (max RPM, time windows, consecutive action limits)
+    must receive hard DENY on violation — not a score penalty.
+    """
+
+    def _contract_agent(self, max_rpm=None, time_windows=None, max_consecutive=None,
+                        actions=None, resources=None):
+        return AgentRegistration(
+            agent_id=f"contract_{uuid.uuid4().hex[:8]}",
+            name="Contract Agent",
+            declared_purpose="Read quarterly reports for executive summary",
+            authorized_resources=resources or ["/reports/*"],
+            authorized_actions=actions or ["read", "list"],
+            max_requests_per_minute=max_rpm,
+            allowed_time_windows=time_windows,
+            max_consecutive_same_action=max_consecutive,
+        )
+
+    def _make_history(self, n, action="read"):
+        now = time.time()
+        return [{"action": action, "resource": "/reports/q1.pdf", "timestamp": now - i}
+                for i in range(n)]
+
+    def _perfect_breakdown(self):
+        from core.models import TrustBreakdown
+        return TrustBreakdown(
+            identity_score=100, delegation_score=100, purpose_alignment_score=100,
+            behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
+            final_score=100, threshold_required=40,
+        )
+
+    # ── RPM contract ──────────────────────────────────────────────────────────
+
+    def test_rpm_contract_fires_at_limit(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_rpm=5)
+        flags = check_behavioral_contract(agent, "read", self._make_history(5))
+        assert any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
+
+    def test_rpm_contract_below_limit_no_flag(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_rpm=5)
+        flags = check_behavioral_contract(agent, "read", self._make_history(4))
+        assert not any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
+
+    def test_rpm_contract_violation_causes_hard_deny(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_rpm=3)
+        flags = check_behavioral_contract(agent, "read", self._make_history(10))
+        assert make_decision(self._perfect_breakdown(), flags) == Decision.DENY
+
+    def test_no_rpm_contract_no_flag(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_rpm=None)
+        flags = check_behavioral_contract(agent, "read", self._make_history(100))
+        assert not any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
+
+    def test_rpm_contract_flag_contains_count(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_rpm=5)
+        flags = check_behavioral_contract(agent, "read", self._make_history(7))
+        rpm_flags = [f for f in flags if "CONTRACT_RPM_EXCEEDED" in f]
+        assert len(rpm_flags) == 1
+        assert "7/5" in rpm_flags[0]
+
+    # ── Consecutive action contract ────────────────────────────────────────────
+
+    def test_consecutive_action_fires(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_consecutive=3)
+        history = self._make_history(3, action="read")
+        flags = check_behavioral_contract(agent, "read", history)
+        assert any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
+
+    def test_consecutive_action_mixed_history_no_fire(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_consecutive=3)
+        history = [
+            {"action": "read", "resource": "/r", "timestamp": time.time()},
+            {"action": "list", "resource": "/r", "timestamp": time.time()},
+            {"action": "read", "resource": "/r", "timestamp": time.time()},
+        ]
+        flags = check_behavioral_contract(agent, "read", history)
+        assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
+
+    def test_consecutive_action_below_limit_no_fire(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_consecutive=5)
+        flags = check_behavioral_contract(agent, "read", self._make_history(4, action="read"))
+        assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
+
+    def test_no_consecutive_contract_no_flag(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(max_consecutive=None)
+        flags = check_behavioral_contract(agent, "read", self._make_history(50, action="read"))
+        assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
+
+    # ── Time window contract ───────────────────────────────────────────────────
+
+    def test_time_window_always_open_no_flag(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(time_windows=["00:00-23:59"])
+        flags = check_behavioral_contract(agent, "read", [])
+        assert not any("CONTRACT_OUTSIDE_TIME_WINDOW" in f for f in flags)
+
+    def test_no_time_windows_no_flag(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(time_windows=None)
+        flags = check_behavioral_contract(agent, "read", [])
+        assert not any("CONTRACT_OUTSIDE_TIME_WINDOW" in f for f in flags)
+
+    def test_time_window_flag_contains_utc_marker(self):
+        from core.trust_engine import check_behavioral_contract
+        from datetime import datetime, timezone
+        now_hm = datetime.now(timezone.utc).strftime("%H:%M")
+        if now_hm not in ("00:01", "00:02"):
+            agent = self._contract_agent(time_windows=["00:01-00:02"])
+            flags = check_behavioral_contract(agent, "read", [])
+            window_flags = [f for f in flags if "CONTRACT_OUTSIDE_TIME_WINDOW" in f]
+            assert len(window_flags) == 1
+            assert "_UTC" in window_flags[0]
+
+    def test_midnight_crossing_window_no_crash(self):
+        from core.trust_engine import check_behavioral_contract
+        agent = self._contract_agent(time_windows=["22:00-06:00"])
+        flags = check_behavioral_contract(agent, "read", [])
+        assert isinstance(flags, list)  # must not raise
+
+    # ── API-level contract test ────────────────────────────────────────────────
+
+    def test_contract_enforced_via_api(self, api_client):
+        uid = f"contract_api_{uuid.uuid4().hex[:8]}"
+        r = api_client.post("/agents/register", json={
+            "agent_id": uid,
+            "name": "Contract API Agent",
+            "declared_purpose": "Read quarterly reports",
+            "authorized_resources": ["/reports/*"],
+            "authorized_actions": ["read"],
+            "max_requests_per_minute": 2,
+        })
+        actual_tok = r.json()["token"]
+
+        for _ in range(2):
+            api_client.post("/authorize", json={
+                "agent_id": uid, "action": "read", "resource": "/reports/q1.pdf",
+                "token": actual_tok, "justification": "reading report",
+            })
+
+        # Third request — history now has ≥2 entries → CONTRACT_RPM_EXCEEDED → DENY
+        r3 = api_client.post("/authorize", json={
+            "agent_id": uid, "action": "read", "resource": "/reports/q1.pdf",
+            "token": actual_tok, "justification": "reading report",
+        })
+        data = r3.json()
+        assert data["decision"] == "DENY"
+        assert any("CONTRACT_RPM_EXCEEDED" in f for f in data["attack_flags"])
+        api_client.delete(f"/agents/{uid}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. KILL CHAIN DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestKillChainDetection:
+    """
+    Kill chain detectors examine the sequence of requests, not each in isolation.
+    Tests verify each detector fires on the correct pattern and produces hard DENY
+    or ESCALATE as appropriate.
+    """
+
+    def _seed_history(self, agent_id, entries):
+        """Write request_history entries directly for deterministic testing."""
+        from core import audit as _audit
+        for action, resource in entries:
+            _audit.log_request_history(agent_id, action, resource)
+
+    # ── Detector 1: Bulk read → exfiltration ─────────────────────────────────
+
+    def test_bulk_read_then_exfil_fires(self):
+        uid = f"kc_exfil_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("read", f"/reports/f{i}.pdf") for i in range(BULK_READ_THRESHOLD)])
+        flags = analyze_kill_chain(uid, "export", "/reports/dump.zip")
+        assert any("KILL_CHAIN:BULK_READ_THEN_EXFIL" in f for f in flags)
+
+    def test_bulk_read_then_destroy_fires(self):
+        uid = f"kc_destroy_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("read", f"/hr/emp{i}.csv") for i in range(BULK_READ_THRESHOLD)])
+        flags = analyze_kill_chain(uid, "delete", "/hr/emp0.csv")
+        assert any("KILL_CHAIN:BULK_READ_THEN_DESTROY" in f for f in flags)
+
+    def test_bulk_read_below_threshold_no_fire(self):
+        uid = f"kc_below_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("read", f"/reports/f{i}.pdf") for i in range(BULK_READ_THRESHOLD - 1)])
+        flags = analyze_kill_chain(uid, "export", "/reports/dump.zip")
+        assert not any("KILL_CHAIN:BULK_READ_THEN_EXFIL" in f for f in flags)
+
+    def test_bulk_read_then_exfil_causes_hard_deny(self, api_client):
+        uid = f"kc_deny_{uuid.uuid4().hex[:8]}"
+        actual_tok = api_client.post("/agents/register", json={
+            "agent_id": uid,
+            "name": "Exfil Agent",
+            "declared_purpose": "Read and export quarterly reports",
+            "authorized_resources": ["/reports/*"],
+            "authorized_actions": ["read", "export"],
+        }).json()["token"]
+
+        # Seed reads through the API
+        for i in range(BULK_READ_THRESHOLD):
+            api_client.post("/authorize", json={
+                "agent_id": uid, "action": "read",
+                "resource": f"/reports/file_{i}.pdf",
+                "token": actual_tok, "justification": "reading report",
+            })
+
+        # Now attempt export — must DENY
+        r = api_client.post("/authorize", json={
+            "agent_id": uid, "action": "export",
+            "resource": "/reports/dump.zip",
+            "token": actual_tok, "justification": "exporting all reports",
+        })
+        data = r.json()
+        assert data["decision"] == "DENY", (
+            f"Bulk-read-then-exfil must DENY. Got {data['decision']}, "
+            f"flags={data['attack_flags']}"
+        )
+        assert any("KILL_CHAIN:BULK_READ_THEN_EXFIL" in f for f in data["attack_flags"])
+        api_client.delete(f"/agents/{uid}")
+
+    # ── Detector 2: Read → delete same resource ───────────────────────────────
+
+    def test_read_then_delete_same_resource_fires(self):
+        uid = f"kc_rtd_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("read", "/confidential/salary.xlsx")])
+        flags = analyze_kill_chain(uid, "delete", "/confidential/salary.xlsx")
+        assert any("KILL_CHAIN:READ_THEN_DELETE" in f for f in flags)
+
+    def test_read_then_delete_different_resource_no_fire(self):
+        uid = f"kc_rtd2_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("read", "/confidential/salary.xlsx")])
+        flags = analyze_kill_chain(uid, "delete", "/confidential/other_file.xlsx")
+        assert not any("KILL_CHAIN:READ_THEN_DELETE" in f for f in flags)
+
+    def test_delete_without_prior_read_no_fire(self):
+        uid = f"kc_rtd3_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [("list", "/confidential/")])
+        flags = analyze_kill_chain(uid, "delete", "/confidential/salary.xlsx")
+        assert not any("KILL_CHAIN:READ_THEN_DELETE" in f for f in flags)
+
+    def test_read_then_delete_causes_hard_deny(self, api_client):
+        uid = f"kc_rtd_api_{uuid.uuid4().hex[:8]}"
+        actual_tok = api_client.post("/agents/register", json={
+            "agent_id": uid,
+            "name": "Cleanup Agent",
+            "declared_purpose": "Read and manage confidential files",
+            "authorized_resources": ["/confidential/*"],
+            "authorized_actions": ["read", "delete"],
+        }).json()["token"]
+
+        # Read the target first
+        api_client.post("/authorize", json={
+            "agent_id": uid, "action": "read",
+            "resource": "/confidential/salary.xlsx",
+            "token": actual_tok, "justification": "reading file",
+        })
+
+        # Now try to delete it — must DENY
+        r = api_client.post("/authorize", json={
+            "agent_id": uid, "action": "delete",
+            "resource": "/confidential/salary.xlsx",
+            "token": actual_tok, "justification": "cleaning up",
+        })
+        data = r.json()
+        assert data["decision"] == "DENY"
+        assert any("KILL_CHAIN:READ_THEN_DELETE" in f for f in data["attack_flags"])
+        api_client.delete(f"/agents/{uid}")
+
+    # ── Detector 3: Sensitivity ramp ─────────────────────────────────────────
+
+    def test_sensitivity_ramp_fires_on_first_critical_after_low_med(self):
+        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        uid = f"kc_ramp_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [
+            ("read", f"/reports/q{i}.pdf") for i in range(SENSITIVITY_RAMP_MIN_HISTORY + 1)
+        ])
+        flags = analyze_kill_chain(uid, "read", "/confidential/salary.xlsx")
+        assert any("KILL_CHAIN:SENSITIVITY_RAMP" in f for f in flags)
+
+    def test_sensitivity_ramp_no_fire_without_enough_history(self):
+        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        uid = f"kc_ramp2_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [
+            ("read", f"/reports/q{i}.pdf") for i in range(SENSITIVITY_RAMP_MIN_HISTORY - 1)
+        ])
+        flags = analyze_kill_chain(uid, "read", "/confidential/salary.xlsx")
+        assert not any("KILL_CHAIN:SENSITIVITY_RAMP" in f for f in flags)
+
+    def test_sensitivity_ramp_no_fire_if_already_hit_critical(self):
+        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        uid = f"kc_ramp3_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [
+            ("read", "/confidential/old_salary.xlsx"),  # CRITICAL — already in history
+            *[("read", f"/reports/q{i}.pdf") for i in range(SENSITIVITY_RAMP_MIN_HISTORY)],
+        ])
+        flags = analyze_kill_chain(uid, "read", "/confidential/salary.xlsx")
+        assert not any("KILL_CHAIN:SENSITIVITY_RAMP" in f for f in flags)
+
+    # ── Detector 4: Directory sweep ───────────────────────────────────────────
+
+    def test_directory_sweep_fires_at_threshold(self):
+        uid = f"kc_sweep_{uuid.uuid4().hex[:8]}"
+        prefixes = ["/reports", "/confidential", "/hr", "/finance", "/admin", "/legal"]
+        self._seed_history(uid, [("read", f"{p}/file.pdf") for p in prefixes])
+        flags = analyze_kill_chain(uid, "read", "/system/config.json")
+        assert any("KILL_CHAIN:DIRECTORY_SWEEP" in f for f in flags)
+
+    def test_directory_sweep_no_fire_below_threshold(self):
+        uid = f"kc_sweep2_{uuid.uuid4().hex[:8]}"
+        self._seed_history(uid, [
+            ("read", "/reports/q1.pdf"),
+            ("read", "/reports/q2.pdf"),
+            ("read", "/reports/q3.pdf"),
+        ])
+        flags = analyze_kill_chain(uid, "read", "/reports/q4.pdf")
+        assert not any("KILL_CHAIN:DIRECTORY_SWEEP" in f for f in flags)
+
+    def test_sweep_causes_escalate_not_deny(self, api_client):
+        uid = f"kc_sweep_api_{uuid.uuid4().hex[:8]}"
+        actual_tok = api_client.post("/agents/register", json={
+            "agent_id": uid,
+            "name": "Sweep Agent",
+            "declared_purpose": "Read files across company systems",
+            "authorized_resources": [
+                "/reports/*", "/confidential/*", "/hr/*",
+                "/finance/*", "/admin/*", "/legal/*", "/system/*",
+            ],
+            "authorized_actions": ["read"],
+        }).json()["token"]
+
+        prefixes = ["/reports", "/confidential", "/hr", "/finance", "/admin", "/legal"]
+        for p in prefixes:
+            api_client.post("/authorize", json={
+                "agent_id": uid, "action": "read",
+                "resource": f"{p}/file.pdf",
+                "token": actual_tok, "justification": "reading file",
+            })
+
+        r = api_client.post("/authorize", json={
+            "agent_id": uid, "action": "read",
+            "resource": "/system/config.json",
+            "token": actual_tok, "justification": "reading config",
+        })
+        data = r.json()
+        # Sweep causes ESCALATE (not hard DENY) — human reviews it
+        assert data["decision"] in ("ESCALATE", "DENY"), (
+            f"Directory sweep should ESCALATE or DENY, got {data['decision']}"
+        )
+        assert any("KILL_CHAIN:DIRECTORY_SWEEP" in f for f in data["attack_flags"])
+        api_client.delete(f"/agents/{uid}")
+
+    # ── Empty history: no false positives ─────────────────────────────────────
+
+    def test_fresh_agent_no_kill_chain_flags(self):
+        uid = f"kc_fresh_{uuid.uuid4().hex[:8]}"
+        flags = analyze_kill_chain(uid, "read", "/reports/q1.pdf")
+        assert flags == [], f"Fresh agent must produce no flags, got {flags}"
+
+    # ── Make decision integration ──────────────────────────────────────────────
+
+    def test_bulk_read_then_exfil_causes_deny_in_make_decision(self):
+        from core.trust_engine import make_decision
+        from core.models import TrustBreakdown
+        # Perfect score — kill chain flag should still force DENY
+        bd = TrustBreakdown(
+            identity_score=100, delegation_score=100, purpose_alignment_score=100,
+            behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
+            final_score=100, threshold_required=40,
+        )
+        flags = [f"KILL_CHAIN:BULK_READ_THEN_EXFIL:10_reads_in_5min"]
+        assert make_decision(bd, flags) == Decision.DENY
+
+    def test_read_then_delete_causes_deny_in_make_decision(self):
+        from core.trust_engine import make_decision
+        from core.models import TrustBreakdown
+        bd = TrustBreakdown(
+            identity_score=100, delegation_score=100, purpose_alignment_score=100,
+            behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
+            final_score=100, threshold_required=40,
+        )
+        flags = ["KILL_CHAIN:READ_THEN_DELETE:/confidential/salary.xlsx"]
+        assert make_decision(bd, flags) == Decision.DENY
+
+    def test_sensitivity_ramp_causes_escalate_not_deny(self):
+        from core.trust_engine import make_decision
+        from core.models import TrustBreakdown
+        bd = TrustBreakdown(
+            identity_score=100, delegation_score=100, purpose_alignment_score=100,
+            behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
+            final_score=100, threshold_required=40,
+        )
+        flags = ["KILL_CHAIN:SENSITIVITY_RAMP:5_low_med_before_first_critical"]
+        # Has flags + score >= threshold → ESCALATE (not DENY, not PERMIT)
+        assert make_decision(bd, flags) == Decision.ESCALATE

@@ -3,6 +3,9 @@ import type {
   AgentRegistration,
   AuthorizeResult,
   ScanResult,
+  DelegationRequest,
+  DelegationResult,
+  RevokeChainResult,
 } from "./types.js";
 import {
   AgentGateDeniedError,
@@ -224,6 +227,48 @@ export class AgentGate {
   ): Promise<T> {
     await this.authorize(action, resource, justification);
     return fn();
+  }
+
+  // ── Delegation ────────────────────────────────────────────────────────────
+
+  async delegate(req: DelegationRequest): Promise<DelegationResult> {
+    return this._fetch<DelegationResult>("/agents/delegate", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  // ── Revocation ────────────────────────────────────────────────────────────
+
+  async revoke(agentId: string): Promise<{ status: string; agent_id: string }> {
+    return this._fetch(`/agents/${encodeURIComponent(agentId)}/revoke`, {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Atomically revoke an agent and every descendant in its delegation chain.
+   * One call neutralizes the entire subtree — the CyberArk gap.
+   */
+  async revokeChain(agentId: string): Promise<RevokeChainResult> {
+    return this._fetch(`/agents/${encodeURIComponent(agentId)}/revoke_chain`, {
+      method: "POST",
+    });
+  }
+
+  // ── Public key ────────────────────────────────────────────────────────────
+
+  /** Return the server's Ed25519 public key PEM for offline token verification. */
+  async getPublicKey(): Promise<{ public_key_pem: string; algorithm: string }> {
+    return this._fetch("/agents/public-key");
+  }
+
+  // ── Convenience: load an already-registered agent by id+token ────────────
+
+  load(agentId: string, token: string): this {
+    this._agentId = agentId;
+    this._token   = token;
+    return this;
   }
 
   // ── Agent state ───────────────────────────────────────────────────────────

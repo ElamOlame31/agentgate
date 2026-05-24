@@ -95,6 +95,14 @@ def init_db():
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
         except Exception:
             pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN behavioral_contract TEXT DEFAULT NULL")
+    except Exception:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN trust_ceiling REAL DEFAULT NULL")
+    except Exception:
+        pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS request_history (
             id TEXT PRIMARY KEY,
@@ -232,13 +240,23 @@ def save_agent(agent: AgentRegistration):
     # Store the hash of the token, never the plaintext.
     # agent.token at this point is already a SHA-256 hex digest (set by the server
     # endpoints before calling save_agent), so we write it directly.
+    behavioral_contract = None
+    contract_data = {
+        "max_requests_per_minute": agent.max_requests_per_minute,
+        "allowed_time_windows": agent.allowed_time_windows,
+        "max_consecutive_same_action": agent.max_consecutive_same_action,
+    }
+    if any(v is not None for v in contract_data.values()):
+        behavioral_contract = json.dumps(contract_data)
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO agents
         (agent_id, name, declared_purpose, authorized_resources, authorized_actions,
          delegated_by, delegation_depth, token, registered_at, token_expires_at,
-         processes_external_content, requires_human_approval, scope_at_delegation)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         processes_external_content, requires_human_approval, scope_at_delegation,
+         behavioral_contract, trust_ceiling)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         agent.agent_id, agent.name, agent.declared_purpose,
         json.dumps(agent.authorized_resources),
@@ -249,6 +267,8 @@ def save_agent(agent: AgentRegistration):
         int(agent.processes_external_content),
         int(agent.requires_human_approval),
         json.dumps(agent.scope_at_delegation) if agent.scope_at_delegation else None,
+        behavioral_contract,
+        agent.trust_ceiling,
     ))
     conn.commit()
     conn.close()
@@ -267,6 +287,14 @@ def load_all_agents() -> dict[str, AgentRegistration]:
         d["requires_human_approval"] = bool(d.get("requires_human_approval", 0))
         raw_scope = d.get("scope_at_delegation")
         d["scope_at_delegation"] = json.loads(raw_scope) if raw_scope else None
+        raw_contract = d.pop("behavioral_contract", None)
+        if raw_contract:
+            contract = json.loads(raw_contract)
+            d["max_requests_per_minute"] = contract.get("max_requests_per_minute")
+            d["allowed_time_windows"] = contract.get("allowed_time_windows")
+            d["max_consecutive_same_action"] = contract.get("max_consecutive_same_action")
+        # trust_ceiling comes directly from the column (float or None)
+        d["trust_ceiling"] = d.get("trust_ceiling")
         d.pop("registered_at", None)
         # Migrate: tokens stored before H2 are plaintext UUIDs. Hash them now and
         # persist so future restarts don't need to re-migrate.
@@ -340,15 +368,48 @@ def update_agent_baseline(agent_id: str, current_rpm: float):
     conn.close()
 
 
+_TRUST_DECAY_RATE = float(os.getenv("AGENTGATE_TRUST_DECAY_RATE", "2.0"))  # pts per hour of inactivity
+_TRUST_DECAY_FLOOR = 20.0   # avg_rpm never decays below this floor
+
+
 def get_agent_baseline(agent_id: str) -> dict | None:
+    """
+    Return the agent's behavioral baseline, applying time-based trust decay.
+
+    Agents that go quiet — no positive signals — have their effective baseline
+    decayed linearly at AGENTGATE_TRUST_DECAY_RATE points/hour, floored at
+    _TRUST_DECAY_FLOOR. This prevents a known-good baseline from being exploited
+    after a long dormancy period, and mirrors how human trust works: sustained
+    inactivity followed by sudden high-volume activity is itself a signal.
+    Decay is applied at read time and persisted, so no background job is needed.
+    """
     conn = sqlite3.connect(DB_PATH)
     _ensure_baseline_table(conn)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT * FROM agent_baselines WHERE agent_id=?", (agent_id,)
     ).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    baseline = dict(row)
+    now = time.time()
+    hours_idle = (now - baseline["last_updated"]) / 3600.0
+
+    if hours_idle > 1.0 and baseline["avg_rpm"] > _TRUST_DECAY_FLOOR:
+        decay = _TRUST_DECAY_RATE * hours_idle
+        decayed_avg = max(_TRUST_DECAY_FLOOR, baseline["avg_rpm"] - decay)
+        if decayed_avg != baseline["avg_rpm"]:
+            conn.execute(
+                "UPDATE agent_baselines SET avg_rpm=?, last_updated=? WHERE agent_id=?",
+                (round(decayed_avg, 3), now, agent_id),
+            )
+            conn.commit()
+            baseline["avg_rpm"] = decayed_avg
+
     conn.close()
-    return dict(row) if row else None
+    return baseline
 
 
 def get_all_baselines() -> list[dict]:

@@ -79,6 +79,11 @@ from core.models import (
 )
 from core import audit, trust_engine
 from core.audit import hash_token
+from core.token import (
+    issue_agent_token, verify_agent_jwt, get_public_key_pem,
+    is_jwt_format, is_jti,
+)
+import jwt as _jwt
 from core.explainer import generate_explanation
 from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
@@ -263,12 +268,18 @@ async def register_agent(request: Request, reg: AgentRegistration):
     reg.delegated_by = None
     reg.delegation_depth = 0
     reg.scope_at_delegation = None
-    plaintext_token = str(uuid.uuid4())
-    reg.token = hash_token(plaintext_token)  # store hash, return plaintext
+    jwt_token, jti, expires_at = issue_agent_token(
+        agent_id=reg.agent_id,
+        declared_purpose=reg.declared_purpose,
+        authorized_resources=reg.authorized_resources,
+        authorized_actions=reg.authorized_actions,
+    )
+    reg.token = jti               # store JTI (UUID), verified against JWT claim on auth
+    reg.token_expires_at = expires_at
     _agents[reg.agent_id] = reg
     audit.save_agent(reg)
     await manager.broadcast({"type": "agents", "data": _agent_list()})
-    return {"agent_id": reg.agent_id, "token": plaintext_token, "status": "registered"}
+    return {"agent_id": reg.agent_id, "token": jwt_token, "status": "registered"}
 
 
 @app.get("/agents", response_model=list, dependencies=[Depends(require_api_key)])
@@ -305,8 +316,21 @@ async def delegate_agent(request: Request, req: DelegationRequest):
 
     parent = _agents[req.parent_agent_id]
 
-    if parent.token and not hmac.compare_digest(hash_token(req.parent_token), parent.token):
-        raise HTTPException(status_code=401, detail="Invalid parent agent token")
+    if parent.token:
+        if is_jti(parent.token):
+            # JWT path: verify signature, then match jti claim
+            if not is_jwt_format(req.parent_token):
+                raise HTTPException(status_code=401, detail="Invalid parent agent token")
+            try:
+                claims = verify_agent_jwt(req.parent_token)
+            except _jwt.InvalidTokenError:
+                raise HTTPException(status_code=401, detail="Invalid parent agent token")
+            if not hmac.compare_digest(claims.get("jti", ""), parent.token):
+                raise HTTPException(status_code=401, detail="Invalid parent agent token")
+        else:
+            # Legacy path: SHA-256 hash compare
+            if not hmac.compare_digest(hash_token(req.parent_token), parent.token):
+                raise HTTPException(status_code=401, detail="Invalid parent agent token")
 
     if parent.delegation_depth >= MAX_DELEGATION_DEPTH:
         raise HTTPException(
@@ -321,7 +345,26 @@ async def delegate_agent(request: Request, req: DelegationRequest):
     if not valid:
         raise HTTPException(status_code=400, detail=f"Scope violation: {error}")
 
-    child_plaintext_token = str(uuid.uuid4())
+    # Trust ceiling: child inherits the parent's current trust baseline as its ceiling.
+    # If the parent has no baseline yet, default to 80.0 — conservative but not punishing.
+    parent_baseline = audit.get_agent_baseline(req.parent_agent_id)
+    parent_trust_score = parent_baseline["avg_rpm"] if parent_baseline else None
+    # avg_rpm is a velocity metric, not a 0-100 score. Use parent's trust_ceiling if set,
+    # otherwise cap the child at 80 to enforce conservative delegation by default.
+    child_trust_ceiling = min(
+        parent.trust_ceiling if parent.trust_ceiling is not None else 80.0,
+        80.0,
+    )
+
+    child_depth = parent.delegation_depth + 1
+    child_jwt, child_jti, child_expires_at = issue_agent_token(
+        agent_id=req.child_agent_id,
+        declared_purpose=req.child_declared_purpose,
+        authorized_resources=req.child_resources,
+        authorized_actions=req.child_actions,
+        delegation_depth=child_depth,
+        delegated_by=req.parent_agent_id,
+    )
     child = AgentRegistration(
         agent_id=req.child_agent_id,
         name=req.child_name,
@@ -329,9 +372,11 @@ async def delegate_agent(request: Request, req: DelegationRequest):
         authorized_resources=req.child_resources,
         authorized_actions=req.child_actions,
         delegated_by=req.parent_agent_id,
-        delegation_depth=parent.delegation_depth + 1,
+        delegation_depth=child_depth,
         scope_at_delegation=parent.authorized_resources + parent.authorized_actions,
-        token=hash_token(child_plaintext_token),
+        token=child_jti,
+        token_expires_at=child_expires_at,
+        trust_ceiling=child_trust_ceiling,
     )
     _agents[child.agent_id] = child
     audit.save_agent(child)
@@ -343,7 +388,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
     )
     return {
         "agent_id": child.agent_id,
-        "token": child_plaintext_token,
+        "token": child_jwt,
         "delegation_depth": child.delegation_depth,
         "delegated_by": child.delegated_by,
         "status": "delegated",
@@ -358,6 +403,68 @@ async def deregister_agent(request: Request, agent_id: str):
     del _agents[agent_id]
     audit.delete_agent(agent_id)
     return {"status": "deregistered"}
+
+
+@app.get("/agents/public-key", dependencies=[Depends(require_api_key)])
+async def public_key():
+    """Return the server's Ed25519 public key in PEM format for offline token verification."""
+    return {"public_key_pem": get_public_key_pem(), "algorithm": "EdDSA"}
+
+
+@app.post("/agents/{agent_id}/revoke", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+async def revoke_agent(request: Request, agent_id: str):
+    """Revoke a single agent's token — the agent remains registered but its JWT is invalidated."""
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = _agents[agent_id]
+    # Issue a tombstone: clear token so every future auth fails with 401
+    agent.token = None
+    agent.token_expires_at = None
+    _agents[agent_id] = agent
+    audit.save_agent(agent)
+    await manager.broadcast({"type": "agents", "data": _agent_list()})
+    print(f"[AgentGate] REVOKED token for {agent_id}", flush=True)
+    return {"status": "revoked", "agent_id": agent_id}
+
+
+@app.post("/agents/{agent_id}/revoke_chain", dependencies=[Depends(require_api_key)])
+@limiter.limit("10/minute")
+async def revoke_agent_chain(request: Request, agent_id: str):
+    """
+    Atomically revoke an agent and every descendant that delegated from it.
+    Walks the delegated_by pointers to find all children. Returns the list of revoked agents.
+    """
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # BFS: collect the agent + all descendants
+    to_revoke: list[str] = []
+    queue: list[str] = [agent_id]
+    while queue:
+        current = queue.pop(0)
+        to_revoke.append(current)
+        children = [aid for aid, a in _agents.items() if a.delegated_by == current]
+        queue.extend(children)
+
+    for aid in to_revoke:
+        agent = _agents[aid]
+        agent.token = None
+        agent.token_expires_at = None
+        _agents[aid] = agent
+        audit.save_agent(agent)
+
+    await manager.broadcast({"type": "agents", "data": _agent_list()})
+    print(
+        f"[AgentGate] REVOKE_CHAIN: {agent_id} + {len(to_revoke)-1} descendants revoked",
+        flush=True,
+    )
+    return {
+        "status": "revoked",
+        "root": agent_id,
+        "revoked": to_revoke,
+        "count": len(to_revoke),
+    }
 
 
 def _agent_list():
@@ -427,11 +534,26 @@ async def authorize(request: Request, body: AuthorizationRequest):
     agent = _agents[body.agent_id]
 
     # ── Token validation ──────────────────────────────────────────────────
-    # agent.token is SHA-256(plaintext) — hash the incoming value before comparing.
-    if agent.token and not hmac.compare_digest(hash_token(body.token or ""), agent.token):
-        raise HTTPException(status_code=401, detail="Invalid agent token")
-    if agent.token_expires_at and time.time() > agent.token_expires_at:
-        raise HTTPException(status_code=401, detail="Agent token expired — re-register")
+    if agent.token:
+        if is_jti(agent.token):
+            # JWT path: verify signature + claims, then match stored jti
+            incoming = body.token or ""
+            if not is_jwt_format(incoming):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            try:
+                claims = verify_agent_jwt(incoming)
+            except _jwt.ExpiredSignatureError:
+                raise HTTPException(status_code=401, detail="Agent token expired — re-register")
+            except _jwt.InvalidTokenError:
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            if not hmac.compare_digest(claims.get("jti", ""), agent.token):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+        else:
+            # Legacy path: SHA-256 hash compare
+            if not hmac.compare_digest(hash_token(body.token or ""), agent.token):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            if agent.token_expires_at and time.time() > agent.token_expires_at:
+                raise HTTPException(status_code=401, detail="Agent token expired — re-register")
 
     # ── Policy check FIRST (hard rules override trust score) ──────────────
     policy_match = check_policies(body.agent_id, body.action, body.resource)

@@ -1,197 +1,326 @@
 """
-AgentGateToolWrapper — wraps any LangChain tool with enforcement.
+AgentGateToolWrapper — wraps any LangChain tool with AgentGate enforcement.
 
-Uses a functional approach: creates a new @tool function with the same
-schema as the original, but intercepts the call before execution.
-This is the approach that works reliably with LangGraph's create_react_agent.
+Critical design decisions:
+- Uses StructuredTool.from_function() to preserve the original tool's arg schema.
+  The old lc_tool(guarded) approach created a generic *args/**kwargs wrapper,
+  which breaks LangGraph tool-call parsing when the LLM passes named arguments.
+- Provides both sync (func=) and async (coroutine=) implementations so the
+  wrapper works correctly in both LangGraph's async event loop and synchronous callers.
+- Fails closed: if AgentGate is unreachable, the action is DENIED rather than
+  falling through to execution.
 """
 
+import asyncio
 import time
 import uuid
-import httpx
-from langchain_core.tools import tool as lc_tool, BaseTool
 
+import httpx
+from langchain_core.tools import BaseTool, StructuredTool
+
+
+# ── Resource / action heuristics ──────────────────────────────────────────────
 
 def _extract_resource(tool_input) -> str:
+    """Extract the primary resource identifier from tool arguments."""
     if isinstance(tool_input, str):
         return tool_input.strip().split()[0] if tool_input.strip() else tool_input
     if isinstance(tool_input, dict):
-        for key in ("path", "file_path", "resource", "url", "query", "directory"):
+        for key in ("path", "file_path", "resource", "url", "uri", "query", "directory", "key"):
             if key in tool_input:
                 return str(tool_input[key])
         if tool_input:
             return str(next(iter(tool_input.values())))
-    return str(tool_input)
+    return str(tool_input) if tool_input else "/"
 
 
 def _infer_action(tool_name: str) -> str:
     name = tool_name.lower()
-    if any(k in name for k in ["delete", "remove", "drop"]):
+    if any(k in name for k in ("delete", "remove", "drop", "destroy", "purge")):
         return "delete"
-    if any(k in name for k in ["write", "create", "save", "update", "insert"]):
+    if any(k in name for k in ("write", "create", "save", "update", "insert", "append")):
         return "write"
-    if any(k in name for k in ["search", "list", "find", "query"]):
+    if any(k in name for k in ("send", "email", "upload", "post", "publish", "export")):
+        return "send"
+    if any(k in name for k in ("search", "list", "find", "query", "browse")):
         return "search"
     return "read"
 
 
-def _authorize(agentgate_url: str, agent_id: str, token: str,
-               action: str, resource: str, justification: str,
-               headers: dict = {}) -> dict:
-    r = httpx.post(
-        f"{agentgate_url}/authorize",
-        headers=headers,
-        json={
-            "agent_id": agent_id,
-            "token": token,
-            "action": action,
-            "resource": resource,
-            "justification": justification,
-            "request_id": str(uuid.uuid4()),
-        },
-        timeout=30.0,
-    )
-    r.raise_for_status()
-    return r.json()
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+def _authorize_sync(
+    agentgate_url: str, agent_id: str, token: str,
+    action: str, resource: str, justification: str,
+    headers: dict,
+) -> dict:
+    try:
+        r = httpx.post(
+            f"{agentgate_url}/authorize",
+            headers=headers,
+            json={
+                "agent_id": agent_id,
+                "token": token,
+                "action": action,
+                "resource": resource,
+                "justification": justification,
+                "request_id": str(uuid.uuid4()),
+            },
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        # Fail closed — if AgentGate is unreachable, deny the action
+        return {
+            "decision": "DENY",
+            "explanation": f"AgentGate unreachable: {exc}",
+            "trust_breakdown": {"final_score": 0},
+            "attack_flags": ["AGENTGATE_UNREACHABLE"],
+            "request_id": "",
+        }
 
 
-def _poll_decision(agentgate_url: str, request_id: str,
-                   headers: dict = {}, max_wait: int = 95) -> str:
-    """Poll /decisions/{id} until resolved or timeout. Returns 'APPROVED' or 'DENIED'."""
+async def _authorize_async(
+    agentgate_url: str, agent_id: str, token: str,
+    action: str, resource: str, justification: str,
+    headers: dict,
+) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{agentgate_url}/authorize",
+                headers=headers,
+                json={
+                    "agent_id": agent_id,
+                    "token": token,
+                    "action": action,
+                    "resource": resource,
+                    "justification": justification,
+                    "request_id": str(uuid.uuid4()),
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as exc:
+        return {
+            "decision": "DENY",
+            "explanation": f"AgentGate unreachable: {exc}",
+            "trust_breakdown": {"final_score": 0},
+            "attack_flags": ["AGENTGATE_UNREACHABLE"],
+            "request_id": "",
+        }
+
+
+def _poll_decision_sync(
+    agentgate_url: str, request_id: str, headers: dict, max_wait: int = 95
+) -> str:
     deadline = time.time() + max_wait
-    remaining = max_wait
-    print(f"[AgentGate] Waiting for human approval on {request_id}… ({max_wait}s timeout)")
+    print(f"[AgentGate] Waiting for human approval ({max_wait}s timeout)…")
     while time.time() < deadline:
         try:
-            r = httpx.get(
-                f"{agentgate_url}/decisions/{request_id}",
-                headers=headers,
-                timeout=5.0,
-            )
+            r = httpx.get(f"{agentgate_url}/decisions/{request_id}", headers=headers, timeout=5.0)
             if r.status_code == 200:
-                data = r.json()
-                status = data.get("status", "PENDING")
+                status = r.json().get("status", "PENDING")
                 if status in ("APPROVED", "DENIED"):
                     return status
-                expires_at = data.get("expires_at", 0)
-                remaining = max(0, int(expires_at - time.time()))
-                print(f"[AgentGate] Still pending… {remaining}s remaining", end="\r")
         except Exception:
             pass
         time.sleep(2)
     return "DENIED"
 
 
-def _scan_content(agentgate_url: str, agent_id: str, content: str,
-                  headers: dict = {}) -> dict:
-    r = httpx.post(
-        f"{agentgate_url}/scan",
-        headers=headers,
-        json={"agent_id": agent_id, "content": content},
-        timeout=30.0,
-    )
-    r.raise_for_status()
-    return r.json()
+async def _poll_decision_async(
+    agentgate_url: str, request_id: str, headers: dict, max_wait: int = 95
+) -> str:
+    deadline = time.time() + max_wait
+    print(f"[AgentGate] Waiting for human approval ({max_wait}s timeout)…")
+    while time.time() < deadline:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{agentgate_url}/decisions/{request_id}", headers=headers)
+                if r.status_code == 200:
+                    status = r.json().get("status", "PENDING")
+                    if status in ("APPROVED", "DENIED"):
+                        return status
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+    return "DENIED"
 
+
+async def _scan_async(
+    agentgate_url: str, agent_id: str, content: str, headers: dict
+) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"{agentgate_url}/scan",
+                headers=headers,
+                json={"agent_id": agent_id, "content": content},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception:
+        return {"level": "clean", "scanned": False, "evidence": "", "confidence": 0.0}
+
+
+def _scan_sync(agentgate_url: str, agent_id: str, content: str, headers: dict) -> dict:
+    try:
+        r = httpx.post(
+            f"{agentgate_url}/scan",
+            headers=headers,
+            json={"agent_id": agent_id, "content": content},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {"level": "clean", "scanned": False, "evidence": "", "confidence": 0.0}
+
+
+def _deny_message(action: str, resource: str, explanation: str) -> str:
+    return (
+        f"[AgentGate DENIED] Cannot {action} '{resource}'. "
+        f"Reason: {explanation}. Do not retry this request."
+    )
+
+
+def _escalate_suffix(score: float, explanation: str) -> str:
+    return f"\n\n[AgentGate WARNING — trust score {score}/100: {explanation}]"
+
+
+# ── Core wrapper ──────────────────────────────────────────────────────────────
 
 class AgentGateToolWrapper:
     """
-    Wraps a LangChain tool: returns a new tool with the same schema
-    but with AgentGate enforcement added before execution.
+    Wraps a LangChain BaseTool with AgentGate enforcement.
+
+    Returns a StructuredTool that has the SAME arg schema as the original —
+    so LangGraph can correctly parse and route tool calls — but intercepts
+    execution to run an AgentGate authorization check first.
     """
 
-    def __init__(self, original_tool: BaseTool, agentgate_url: str,
-                 agent_id: str, token: str, processes_external_content: bool = False,
-                 api_key: str = ""):
-        self.original_tool = original_tool
-        self.agentgate_url = agentgate_url
+    def __init__(
+        self,
+        original_tool: BaseTool,
+        agentgate_url: str,
+        agent_id: str,
+        token: str,
+        processes_external_content: bool = False,
+        api_key: str = "",
+        pending_timeout: int = 95,
+    ):
+        self.original = original_tool
+        self.agentgate_url = agentgate_url.rstrip("/")
         self.agent_id = agent_id
         self.token = token
         self.processes_external_content = processes_external_content
-        self._headers = {"X-API-Key": api_key} if api_key else {}
-        self.wrapped = self._build()
+        self.pending_timeout = pending_timeout
+        self._headers = {"X-API-Key": api_key, "Content-Type": "application/json"} if api_key else {"Content-Type": "application/json"}
+        self._wrapped = self._build()
 
     def _build(self) -> BaseTool:
-        original = self.original_tool
-        agentgate_url = self.agentgate_url
+        original = self.original
+        url = self.agentgate_url
         agent_id = self.agent_id
         token = self.token
-        processes_external_content = self.processes_external_content
+        ext = self.processes_external_content
         headers = self._headers
+        timeout = self.pending_timeout
 
-        original_func = original.func if hasattr(original, "func") else None
+        # Resolve the callable — StructuredTool stores it as .func, @tool as .func
+        original_func = getattr(original, "func", None)
+        original_coro = getattr(original, "coroutine", None)
 
-        if original_func is None:
-            return original
+        if original_func is None and original_coro is None:
+            return original  # cannot wrap — return as-is
 
-        import functools
-
-        @functools.wraps(original_func)
-        def guarded(*args, **kwargs):
-            resource = _extract_resource(kwargs if kwargs else (args[0] if args else ""))
+        def _guarded(**kwargs):
             action = _infer_action(original.name)
-            justification = f"LangChain agent calling {original.name}"
+            resource = _extract_resource(kwargs)
+            justification = f"{original.name}: {resource}"
 
-            result = _authorize(agentgate_url, agent_id, token, action, resource, justification, headers)
-            decision = result["decision"]
-            score = result["trust_breakdown"]["final_score"]
-            explanation = result["explanation"]
+            auth = _authorize_sync(url, agent_id, token, action, resource, justification, headers)
+            decision = auth.get("decision", "DENY")
+            explanation = auth.get("explanation", "")
+            score = auth.get("trust_breakdown", {}).get("final_score", 0)
+            request_id = auth.get("request_id", "")
 
             if decision == "DENY":
-                return (
-                    f"ACCESS DENIED by AgentGate security layer. "
-                    f"Action: {action} on '{resource}'. "
-                    f"Reason: {explanation}. "
-                    f"Do not retry this request."
-                )
+                return _deny_message(action, resource, explanation)
 
             if decision == "PENDING":
-                request_id = result.get("request_id", "")
-                print(f"\n[AgentGate] HUMAN APPROVAL REQUIRED for {action} on '{resource}'")
-                print(f"[AgentGate] Check your phone or dashboard to approve/deny.")
-                human_decision = _poll_decision(agentgate_url, request_id, headers)
-                print(f"\n[AgentGate] Human decision: {human_decision}")
-                if human_decision != "APPROVED":
-                    return (
-                        f"ACCESS DENIED by human reviewer via AgentGate.\n"
-                        f"Action: {action} on '{resource}'.\n"
-                        f"A human operator reviewed and denied this request.\n"
-                        f"Do not retry this request."
-                    )
+                human = _poll_decision_sync(url, request_id, headers, timeout)
+                if human != "APPROVED":
+                    return _deny_message(action, resource, "denied by human reviewer")
 
-            # Execute the real tool
-            output = original_func(*args, **kwargs)
+            output = original_func(**kwargs) if original_func else None
 
-            # Injection scan: only for read actions on agents that handle external content
-            if action == "read" and processes_external_content and isinstance(output, str):
-                scan = _scan_content(agentgate_url, agent_id, output, headers)
+            if action == "read" and ext and isinstance(output, str):
+                scan = _scan_sync(url, agent_id, output, headers)
                 if scan.get("scanned") and scan.get("level") == "injection":
                     return (
-                        f"CONTENT BLOCKED by AgentGate injection detector.\n"
-                        f"Resource: '{resource}'\n"
-                        f"Detection: {scan['evidence']}\n"
-                        f"Confidence: {scan['confidence']:.0%}\n"
-                        f"The document contains prompt injection instructions. "
-                        f"Content has been withheld to protect agent integrity."
+                        f"[AgentGate BLOCKED] Prompt injection detected in '{resource}'. "
+                        f"Evidence: {scan['evidence']}. Content withheld."
                     )
-                elif scan.get("scanned") and scan.get("level") == "suspicious":
-                    output = (
-                        f"{output}\n\n"
-                        f"[AgentGate WARNING: suspicious content detected — {scan['evidence']}]"
-                    )
+                if scan.get("scanned") and scan.get("level") == "suspicious":
+                    output = output + f"\n\n[AgentGate WARNING: suspicious content — {scan['evidence']}]"
 
             if decision == "ESCALATE":
-                return (
-                    f"{output}\n\n"
-                    f"[AgentGate FLAGGED: score {score}/100. {explanation}]"
-                )
+                return str(output) + _escalate_suffix(score, explanation)
 
             return output
 
-        guarded.__name__ = original.name
-        guarded.__doc__ = original.description
-        wrapped_tool = lc_tool(guarded)
-        return wrapped_tool
+        async def _aguarded(**kwargs):
+            action = _infer_action(original.name)
+            resource = _extract_resource(kwargs)
+            justification = f"{original.name}: {resource}"
+
+            auth = await _authorize_async(url, agent_id, token, action, resource, justification, headers)
+            decision = auth.get("decision", "DENY")
+            explanation = auth.get("explanation", "")
+            score = auth.get("trust_breakdown", {}).get("final_score", 0)
+            request_id = auth.get("request_id", "")
+
+            if decision == "DENY":
+                return _deny_message(action, resource, explanation)
+
+            if decision == "PENDING":
+                human = await _poll_decision_async(url, request_id, headers, timeout)
+                if human != "APPROVED":
+                    return _deny_message(action, resource, "denied by human reviewer")
+
+            if original_coro is not None:
+                output = await original_coro(**kwargs)
+            elif original_func is not None:
+                output = await asyncio.to_thread(original_func, **kwargs)
+            else:
+                output = None
+
+            if action == "read" and ext and isinstance(output, str):
+                scan = await _scan_async(url, agent_id, output, headers)
+                if scan.get("scanned") and scan.get("level") == "injection":
+                    return (
+                        f"[AgentGate BLOCKED] Prompt injection detected in '{resource}'. "
+                        f"Evidence: {scan['evidence']}. Content withheld."
+                    )
+                if scan.get("scanned") and scan.get("level") == "suspicious":
+                    output = str(output) + f"\n\n[AgentGate WARNING: suspicious content — {scan['evidence']}]"
+
+            if decision == "ESCALATE":
+                return str(output) + _escalate_suffix(score, explanation)
+
+            return output
+
+        return StructuredTool.from_function(
+            func=_guarded,
+            coroutine=_aguarded,
+            name=original.name,
+            description=original.description,
+            args_schema=original.args_schema,   # ← preserves the original schema exactly
+            return_direct=original.return_direct,
+        )
 
     def get(self) -> BaseTool:
-        return self.wrapped
+        return self._wrapped

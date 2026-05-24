@@ -3,12 +3,14 @@ import posixpath
 import re
 import unicodedata
 import urllib.parse
+from datetime import datetime, timezone
 from core.models import (
     AgentRegistration, AuthorizationRequest,
     TrustBreakdown, ResourceSensitivity, Decision
 )
 from core.purpose_engine import compute_purpose_score
 from core import audit
+from core.kill_chain import analyze_kill_chain
 
 # Sensitivity thresholds: minimum trust score required to PERMIT
 SENSITIVITY_THRESHOLDS = {
@@ -189,7 +191,65 @@ def score_delegation(
     multiplier = compute_chain_trust_multiplier(depth)
     score = score * multiplier
 
+    # Trust ceiling: delegated agents cannot exceed the ceiling set by the parent
+    # at delegation time. Prevents trust-washing — a bad actor cannot spawn a
+    # sub-agent and accumulate trust the parent was never permitted to hold.
+    if agent.trust_ceiling is not None:
+        score = min(score, agent.trust_ceiling)
+        if agent.trust_ceiling < 50.0:
+            flags.append(f"TRUST_CEILING_ACTIVE:{round(agent.trust_ceiling)}")
+
     return max(0.0, score), flags
+
+
+def check_behavioral_contract(
+    agent: AgentRegistration,
+    action: str,
+    history: list[dict],
+) -> list[str]:
+    """
+    Deterministic checks against the agent's declared behavioral contract.
+
+    Unlike the probabilistic velocity scorer, violations here are binary: the agent
+    declared a hard limit at registration time and is now exceeding it. The contract
+    terms appear verbatim in the audit log so violations are always explainable.
+    """
+    flags = []
+
+    if agent.max_requests_per_minute is not None:
+        rpm = len(history)
+        if rpm >= agent.max_requests_per_minute:
+            flags.append(f"CONTRACT_RPM_EXCEEDED:{rpm}/{agent.max_requests_per_minute}")
+
+    if agent.allowed_time_windows:
+        now_utc = datetime.now(timezone.utc)
+        current_hm = now_utc.strftime("%H:%M")
+        in_window = False
+        for window in agent.allowed_time_windows:
+            try:
+                start, end = window.strip().split("-")
+                start, end = start.strip(), end.strip()
+                if start <= end:
+                    if start <= current_hm <= end:
+                        in_window = True
+                        break
+                else:
+                    # Window crosses midnight — e.g. "22:00-06:00"
+                    if current_hm >= start or current_hm <= end:
+                        in_window = True
+                        break
+            except Exception:
+                pass  # malformed window — fail open for this entry
+        if not in_window:
+            flags.append(f"CONTRACT_OUTSIDE_TIME_WINDOW:{current_hm}_UTC")
+
+    if agent.max_consecutive_same_action is not None:
+        limit = agent.max_consecutive_same_action
+        recent = [h["action"] for h in history[:limit]]
+        if len(recent) >= limit and all(a == action for a in recent):
+            flags.append(f"CONTRACT_CONSECUTIVE_ACTION:{action}:{limit}")
+
+    return flags
 
 
 def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
@@ -273,6 +333,14 @@ def compute_trust(
         request.justification or ""
     )
 
+    # Behavioral contract check: deterministic against declared registration-time limits
+    contract_history = audit.get_agent_request_history(agent.agent_id, window_seconds=60.0)
+    contract_flags = check_behavioral_contract(agent, request.action, contract_history)
+    all_flags.extend(contract_flags)
+
+    kc_flags = analyze_kill_chain(agent.agent_id, request.action, request.resource)
+    all_flags.extend(kc_flags)
+
     beh_score, beh_flags = score_behavioral(agent.agent_id, request.action)
     # Penalize behavioral score when a prior injection scan flagged this agent
     if injection_risk > 0.5:
@@ -308,6 +376,18 @@ def compute_trust(
 def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     score = breakdown.final_score
     threshold = breakdown.threshold_required
+
+    # Hard deny on high-confidence kill chain patterns
+    # BULK_READ_THEN_* and READ_THEN_DELETE indicate data theft with near certainty.
+    # SENSITIVITY_RAMP and DIRECTORY_SWEEP fall through to score-based ESCALATE.
+    if any("KILL_CHAIN:BULK_READ_THEN_" in f for f in flags):
+        return Decision.DENY
+    if any("KILL_CHAIN:READ_THEN_DELETE" in f for f in flags):
+        return Decision.DENY
+
+    # Hard deny on behavioral contract violations — agent exceeded its own declared limits
+    if any(f.startswith("CONTRACT_") for f in flags):
+        return Decision.DENY
 
     # Hard deny on secrets detected in resource path or justification
     if any("SECRETS_IN_ARGS" in f for f in flags):

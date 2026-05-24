@@ -26,5 +26,6 @@ Usage:
 
 from integrations.langchain_agentgate.toolkit import AgentGateToolkit
 from integrations.langchain_agentgate.wrapper import AgentGateToolWrapper
+from integrations.langchain_agentgate.langgraph import AgentGateToolNode
 
-__all__ = ["AgentGateToolkit", "AgentGateToolWrapper"]
+__all__ = ["AgentGateToolkit", "AgentGateToolWrapper", "AgentGateToolNode"]
