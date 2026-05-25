@@ -141,41 +141,49 @@ def _compute_entry_hash(prev_hash: str, entry_json: str) -> str:
 
 def log_decision(response: AuthorizationResponse, record_history: bool = True):
     conn = sqlite3.connect(DB_PATH)
-    entry_json = response.model_dump_json()
-    prev_hash  = _get_last_entry_hash(conn)
-    entry_hash = _compute_entry_hash(prev_hash, entry_json)
-    conn.execute("""
-        INSERT INTO audit_log
-        (id, timestamp, agent_id, action, resource, decision, trust_score,
-         identity_score, delegation_score, purpose_score, behavioral_score,
-         resource_sensitivity, explanation, attack_flags, full_json, entry_hash)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        response.request_id,
-        response.timestamp,
-        response.agent_id,
-        response.action,
-        response.resource,
-        response.decision.value,
-        response.trust_breakdown.final_score,
-        response.trust_breakdown.identity_score,
-        response.trust_breakdown.delegation_score,
-        response.trust_breakdown.purpose_alignment_score,
-        response.trust_breakdown.behavioral_score,
-        response.trust_breakdown.resource_sensitivity.value,
-        response.explanation,
-        json.dumps(response.attack_flags),
-        entry_json,
-        entry_hash,
-    ))
-    # Don't record unregistered-agent probes in request_history — they would
-    # poison the velocity baseline for any agent later registered with that ID.
-    if record_history:
+    try:
+        # EXCLUSIVE lock serializes the read→hash→write so concurrent requests
+        # cannot both read the same prev_hash and produce a branched chain.
+        conn.execute("BEGIN EXCLUSIVE")
+        entry_json = response.model_dump_json()
+        prev_hash  = _get_last_entry_hash(conn)
+        entry_hash = _compute_entry_hash(prev_hash, entry_json)
         conn.execute("""
-            INSERT INTO request_history VALUES (?,?,?,?,?)
-        """, (str(uuid.uuid4()), response.agent_id, response.action, response.resource, response.timestamp))
-    conn.commit()
-    conn.close()
+            INSERT INTO audit_log
+            (id, timestamp, agent_id, action, resource, decision, trust_score,
+             identity_score, delegation_score, purpose_score, behavioral_score,
+             resource_sensitivity, explanation, attack_flags, full_json, entry_hash)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            response.request_id,
+            response.timestamp,
+            response.agent_id,
+            response.action,
+            response.resource,
+            response.decision.value,
+            response.trust_breakdown.final_score,
+            response.trust_breakdown.identity_score,
+            response.trust_breakdown.delegation_score,
+            response.trust_breakdown.purpose_alignment_score,
+            response.trust_breakdown.behavioral_score,
+            response.trust_breakdown.resource_sensitivity.value,
+            response.explanation,
+            json.dumps(response.attack_flags),
+            entry_json,
+            entry_hash,
+        ))
+        # Don't record unregistered-agent probes in request_history — they would
+        # poison the velocity baseline for any agent later registered with that ID.
+        if record_history:
+            conn.execute("""
+                INSERT INTO request_history VALUES (?,?,?,?,?)
+            """, (str(uuid.uuid4()), response.agent_id, response.action, response.resource, response.timestamp))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_recent_decisions(limit: int = 50) -> list[dict]:

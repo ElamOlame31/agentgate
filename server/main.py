@@ -373,7 +373,7 @@ async def delegate_agent(request: Request, req: DelegationRequest):
         authorized_actions=req.child_actions,
         delegated_by=req.parent_agent_id,
         delegation_depth=child_depth,
-        scope_at_delegation=parent.authorized_resources + parent.authorized_actions,
+        scope_at_delegation=parent.authorized_actions,
         token=child_jti,
         token_expires_at=child_expires_at,
         trust_ceiling=child_trust_ceiling,

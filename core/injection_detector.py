@@ -122,7 +122,7 @@ def should_scan(
     if not processes_external_content:
         return False
 
-    has_destructive = any(a.lower() in ("write", "delete", "admin") for a in authorized_actions)
+    has_destructive = any(a.lower() in ("write", "delete", "admin", "update", "overwrite", "modify") for a in authorized_actions)
     is_sensitive = resource_sensitivity in ("HIGH", "CRITICAL")
 
     return has_destructive or is_sensitive

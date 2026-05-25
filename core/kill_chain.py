@@ -14,6 +14,7 @@ Flags are tiered:
 """
 
 import posixpath
+from urllib.parse import unquote
 from core import audit
 from core.models import ResourceSensitivity
 
@@ -39,9 +40,14 @@ _DESTRUCTIVE_ACTIONS = {
 }
 
 
+def _normalize_path(resource: str) -> str:
+    """URL-decode then POSIX-normalize and lowercase to prevent bypass via encoding or casing."""
+    return posixpath.normpath(unquote(resource)).lower()
+
+
 def _top_prefix(resource: str) -> str:
     """Extract the first path component: /reports/q3/q3.pdf → /reports"""
-    parts = posixpath.normpath(resource).split("/")
+    parts = _normalize_path(resource).split("/")
     return "/" + parts[1] if len(parts) > 1 and parts[1] else "/"
 
 
@@ -81,11 +87,11 @@ def analyze_kill_chain(agent_id: str, action: str, resource: str) -> list[str]:
     # Agent read a specific resource and now wants to delete it.
     # High-confidence data-theft + cover-tracks signal.
     if action_lower in _DESTRUCTIVE_ACTIONS:
-        target = posixpath.normpath(resource)
+        target = _normalize_path(resource)
         prior_reads = [
             h for h in history
             if h["action"].lower() == "read"
-            and posixpath.normpath(h["resource"]) == target
+            and _normalize_path(h["resource"]) == target
         ]
         if prior_reads:
             flags.append(f"KILL_CHAIN:READ_THEN_DELETE:{resource}")
