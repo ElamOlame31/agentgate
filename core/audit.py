@@ -123,6 +123,27 @@ def init_db():
             window_count INTEGER DEFAULT 0
         )
     """)
+    # Indexes — all idempotent (IF NOT EXISTS), safe to run on existing DBs.
+    # request_history: queried by agent_id + timestamp on every /authorize call.
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rh_agent_ts
+        ON request_history(agent_id, timestamp DESC)
+    """)
+    # audit_log: queried by agent_id for per-agent history and by timestamp for
+    # recency/range queries, and by entry_hash for chain verification.
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_al_agent
+        ON audit_log(agent_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_al_ts
+        ON audit_log(timestamp DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_al_entry_hash
+        ON audit_log(entry_hash)
+        WHERE entry_hash IS NOT NULL
+    """)
     conn.commit()
     conn.close()
 
