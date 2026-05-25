@@ -102,7 +102,11 @@ def check_chain_scope(agent_id: str, action: str, resource: str, agents: dict) -
 
         resource_ok = any(
             fnmatch.fnmatch(resource, pattern) or
-            (pattern.endswith("/*") and resource.startswith(pattern[:-2]))
+            # Allow the directory itself (e.g. /reports matches /reports/*).
+            # Use exact match + "/" to avoid /reportsfoo matching /reports/*.
+            (pattern.endswith("/*") and (
+                resource == pattern[:-2] or resource.startswith(pattern[:-2] + "/")
+            ))
             for pattern in ancestor.authorized_resources
         )
         if not resource_ok:

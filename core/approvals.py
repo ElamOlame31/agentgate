@@ -145,6 +145,18 @@ def approve(request_id: str) -> bool:
     return True
 
 
+def cleanup_resolved(max_age_seconds: float = 3600.0):
+    """Evict resolved approvals older than max_age_seconds to prevent unbounded growth."""
+    cutoff = time.time() - max_age_seconds
+    with _lock:
+        to_remove = [
+            rid for rid, a in _store.items()
+            if a.status != "PENDING" and a.created_at < cutoff
+        ]
+        for rid in to_remove:
+            del _store[rid]
+
+
 def deny(request_id: str) -> bool:
     broadcast_data = None
     with _lock:

@@ -801,16 +801,24 @@ class TestIsTimeActive:
         p = self._make_policy("00:00", "23:59", time_invert=True)
         assert _is_time_active(p) is False
 
-    def test_overnight_window_not_supported(self):
-        # WEAKNESS: start=22:00, end=06:00 crosses midnight
-        # 22*60=1320, 6*60=360 → 1320 <= X <= 360 is never True
+    def test_overnight_window_supported(self):
+        # Cross-midnight window (22:00-06:00) — must be active at 22:xx and 05:xx.
+        # The fix uses: current >= start OR current <= end for cross-midnight ranges.
+        from datetime import datetime, timezone
+        import unittest.mock as mock
         p = self._make_policy("22:00", "06:00")
-        # At any hour, this is never active — bug
-        result = _is_time_active(p)
-        assert result is False, (
-            "KNOWN WEAKNESS: overnight time windows (e.g. 22:00-06:00) are "
-            "never active because the simple range check 1320 <= X <= 360 fails."
-        )
+        # At 23:00 UTC — inside the overnight window
+        with mock.patch("core.policy_engine.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+            assert _is_time_active(p) is True
+        # At 05:00 UTC — inside the overnight window (before end)
+        with mock.patch("core.policy_engine.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc)
+            assert _is_time_active(p) is True
+        # At 12:00 UTC — outside the overnight window
+        with mock.patch("core.policy_engine.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+            assert _is_time_active(p) is False
 
 
 class TestCheckPolicies:

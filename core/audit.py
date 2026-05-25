@@ -271,7 +271,7 @@ def save_agent(agent: AgentRegistration):
         json.dumps(agent.authorized_actions),
         agent.delegated_by, agent.delegation_depth,
         agent.token, time.time(),
-        time.time() + TOKEN_TTL,
+        agent.token_expires_at if agent.token_expires_at is not None else time.time() + TOKEN_TTL,
         int(agent.processes_external_content),
         int(agent.requires_human_approval),
         json.dumps(agent.scope_at_delegation) if agent.scope_at_delegation else None,

@@ -747,9 +747,10 @@ class TestKnownWeaknessesAndGaps:
             "Operators must always set tokens on registration."
         )
 
-    def test_gap_overnight_time_window_in_policy(self):
-        # time_window 22:00-06:00 crossing midnight is never active.
-        # Pre-existing known weakness — V2 did not address this.
+    def test_overnight_time_window_now_supported(self):
+        # Cross-midnight windows (22:00-06:00) are now correctly handled.
+        from datetime import datetime, timezone
+        import unittest.mock as mock
         from core.policy_engine import _is_time_active, Policy
         p = Policy(
             id="test",
@@ -763,10 +764,14 @@ class TestKnownWeaknessesAndGaps:
             time_invert=False,
             created_at=time.time(),
         )
-        assert _is_time_active(p) is False, (
-            "KNOWN GAP: overnight time windows never activate — "
-            "start=22:00 > end=06:00 fails simple range check"
-        )
+        # 23:00 UTC — inside overnight window
+        with mock.patch("core.policy_engine.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+            assert _is_time_active(p) is True
+        # 14:00 UTC — outside overnight window
+        with mock.patch("core.policy_engine.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)
+            assert _is_time_active(p) is False
 
     def test_gap_injection_score_not_in_audit_db(self, api_client):
         # injection_score is in AuthorizationResponse but audit.log_decision

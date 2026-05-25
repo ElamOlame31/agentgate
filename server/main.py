@@ -156,6 +156,8 @@ async def _periodic_cleanup():
         expired = [aid for aid, s in _recent_scans.items() if now - s["ts"] > _SCAN_TTL]
         for aid in expired:
             _recent_scans.pop(aid, None)
+        # Evict resolved approval records older than 1 hour
+        approvals.cleanup_resolved(max_age_seconds=3600.0)
 
 
 @asynccontextmanager
@@ -402,6 +404,7 @@ async def deregister_agent(request: Request, agent_id: str):
         raise HTTPException(status_code=404, detail="Agent not found")
     del _agents[agent_id]
     audit.delete_agent(agent_id)
+    await manager.broadcast({"type": "agents", "data": _agent_list()})
     return {"status": "deregistered"}
 
 
@@ -534,6 +537,10 @@ async def authorize(request: Request, body: AuthorizationRequest):
     agent = _agents[body.agent_id]
 
     # ── Token validation ──────────────────────────────────────────────────
+    # token=None means the agent was explicitly revoked — deny immediately.
+    if agent.token is None:
+        raise HTTPException(status_code=401, detail="Agent token has been revoked")
+
     if agent.token:
         if is_jti(agent.token):
             # JWT path: verify signature + claims, then match stored jti

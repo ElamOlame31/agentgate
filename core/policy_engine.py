@@ -174,7 +174,13 @@ def _is_time_active(policy: Policy) -> bool:
     start_minutes = sh * 60 + sm
     end_minutes = eh * 60 + em
 
-    in_window = start_minutes <= current_minutes <= end_minutes
+    if start_minutes <= end_minutes:
+        # Normal same-day window (e.g. 09:00-17:00)
+        in_window = start_minutes <= current_minutes <= end_minutes
+    else:
+        # Cross-midnight window (e.g. 22:00-06:00)
+        in_window = current_minutes >= start_minutes or current_minutes <= end_minutes
+
     return (not in_window) if policy.time_invert else in_window
 
 
