@@ -4,6 +4,13 @@ from enum import Enum
 import time
 
 
+# Single source of truth for exfiltration action verbs.
+# Imported by trust_engine, kill_chain, and purpose_engine.
+EXFILTRATION_ACTIONS: frozenset[str] = frozenset({
+    "send", "email", "upload", "post", "forward", "export", "transfer", "publish",
+})
+
+
 class ResourceSensitivity(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"

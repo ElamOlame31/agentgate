@@ -16,7 +16,7 @@ Flags are tiered:
 import posixpath
 from urllib.parse import unquote
 from core import audit
-from core.models import ResourceSensitivity
+from core.models import ResourceSensitivity, EXFILTRATION_ACTIONS as _EXFIL_ACTIONS
 
 # Analysis window: longer than velocity detection (60 s) to catch slow-burn attacks
 KILL_CHAIN_WINDOW_SECONDS = 300.0  # 5 minutes
@@ -30,10 +30,6 @@ SWEEP_PREFIX_THRESHOLD = 6
 # Minimum low/medium requests before a sensitivity ramp fires on a first CRITICAL hit
 SENSITIVITY_RAMP_MIN_HISTORY = 5
 
-_EXFIL_ACTIONS = {
-    "send", "email", "upload", "post", "forward",
-    "export", "transfer", "publish",
-}
 _DESTRUCTIVE_ACTIONS = {
     "delete", "remove", "drop", "truncate",
     "wipe", "purge", "destroy", "overwrite",

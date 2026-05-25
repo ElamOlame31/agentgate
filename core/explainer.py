@@ -32,7 +32,14 @@ def generate_explanation(
     flags: list[str],
 ) -> str:
     if not _explainer_enabled():
-        raise Exception("Cloud explainer disabled via AGENTGATE_EXPLAINER_ENABLED=false")
+        # Cloud explainer disabled for data residency — use local fallback directly.
+        if decision == Decision.DENY:
+            return f"Access denied: {_weakest_score(breakdown, flags)}."
+        elif decision == Decision.ESCALATE:
+            if flags:
+                return f"Flagged for review: {_humanize_flag(flags[0])} (trust score {breakdown.final_score}/100)."
+            return f"Flagged for review: trust score {breakdown.final_score}/100 is below the required {breakdown.threshold_required} — {_weakest_score(breakdown, [])}."
+        return f"Access granted: agent identity, purpose, and behavior all check out (score {breakdown.final_score}/100)."
 
     safe_name = _sanitize(agent_name, 128)
     safe_action = _sanitize(action, 128)

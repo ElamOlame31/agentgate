@@ -6,7 +6,8 @@ import urllib.parse
 from datetime import datetime, timezone
 from core.models import (
     AgentRegistration, AuthorizationRequest,
-    TrustBreakdown, ResourceSensitivity, Decision
+    TrustBreakdown, ResourceSensitivity, Decision,
+    EXFILTRATION_ACTIONS,
 )
 from core.purpose_engine import compute_purpose_score
 from core import audit
@@ -19,9 +20,6 @@ SENSITIVITY_THRESHOLDS = {
     ResourceSensitivity.HIGH: 75.0,
     ResourceSensitivity.CRITICAL: 90.0,
 }
-
-# Actions that move data out of the system — always treated as CRITICAL sensitivity
-EXFILTRATION_ACTIONS = {"send", "email", "upload", "post", "forward", "export", "transfer", "publish"}
 
 # Secret patterns to detect in resource paths and justifications
 _SECRETS_PATTERNS = [

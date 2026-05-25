@@ -230,13 +230,16 @@ class AgentGate:
         if not self._agent_id:
             raise AgentGateNotRegistered("Call gate.register(...) before gate.scan()")
 
-        r = httpx.post(
-            f"{self.url}/scan",
-            headers=self._headers,
-            json={"agent_id": self._agent_id, "content": content},
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
+        try:
+            r = httpx.post(
+                f"{self.url}/scan",
+                headers=self._headers,
+                json={"agent_id": self._agent_id, "content": content},
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
         return r.json()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -469,12 +472,15 @@ class AsyncAgentGate:
         if not self._agent_id:
             raise AgentGateNotRegistered("Call await gate.register(...) before gate.scan()")
 
-        async with httpx.AsyncClient(headers=self._headers, timeout=self.timeout) as client:
-            r = await client.post(
-                f"{self.url}/scan",
-                json={"agent_id": self._agent_id, "content": content},
-            )
-            r.raise_for_status()
+        try:
+            async with httpx.AsyncClient(headers=self._headers, timeout=self.timeout) as client:
+                r = await client.post(
+                    f"{self.url}/scan",
+                    json={"agent_id": self._agent_id, "content": content},
+                )
+                r.raise_for_status()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
         return r.json()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
