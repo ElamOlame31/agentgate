@@ -11,6 +11,7 @@ import {
   AgentGateDeniedError,
   AgentGateEscalatedError,
   AgentGateNotRegisteredError,
+  AgentGatePendingError,
   AgentGateUnavailableError,
 } from "./errors.js";
 
@@ -139,6 +140,10 @@ export class AgentGate {
         request_id:   randomUUID(),
       }),
     });
+
+    if (result.decision === "PENDING" && !this.autoResolvePending) {
+      throw new AgentGatePendingError(result.request_id);
+    }
 
     if (result.decision === "PENDING" && this.autoResolvePending) {
       const humanDecision = await this._pollPending(result.request_id);
