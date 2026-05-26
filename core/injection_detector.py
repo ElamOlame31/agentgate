@@ -175,4 +175,4 @@ def scan_content(content: str, declared_purpose: str) -> InjectionResult:
             evidence=f"Content shows possible redirection attempt (score {score:.2f})"
         )
 
-    return InjectionResult("clean", score, "no injection patterns detected")
+    return InjectionResult("clean", 0.0, "no injection patterns detected")

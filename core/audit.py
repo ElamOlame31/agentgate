@@ -306,38 +306,40 @@ def save_agent(agent: AgentRegistration):
 def load_all_agents() -> dict[str, AgentRegistration]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM agents").fetchall()
-    result = {}
-    for r in rows:
-        d = dict(r)
-        d["authorized_resources"] = json.loads(d["authorized_resources"])
-        d["authorized_actions"] = json.loads(d["authorized_actions"])
-        d["processes_external_content"] = bool(d.get("processes_external_content", 0))
-        d["requires_human_approval"] = bool(d.get("requires_human_approval", 0))
-        raw_scope = d.get("scope_at_delegation")
-        d["scope_at_delegation"] = json.loads(raw_scope) if raw_scope else None
-        raw_contract = d.pop("behavioral_contract", None)
-        if raw_contract:
-            contract = json.loads(raw_contract)
-            d["max_requests_per_minute"] = contract.get("max_requests_per_minute")
-            d["allowed_time_windows"] = contract.get("allowed_time_windows")
-            d["max_consecutive_same_action"] = contract.get("max_consecutive_same_action")
-        # trust_ceiling comes directly from the column (float or None)
-        d["trust_ceiling"] = d.get("trust_ceiling")
-        d.pop("registered_at", None)
-        # Migrate: tokens stored before H2 are plaintext UUIDs. Hash them now and
-        # persist so future restarts don't need to re-migrate.
-        if d.get("token") and _UUID_RE.match(d["token"]):
-            hashed = hash_token(d["token"])
-            conn.execute(
-                "UPDATE agents SET token=? WHERE agent_id=?",
-                (hashed, d["agent_id"])
-            )
-            d["token"] = hashed
-        result[d["agent_id"]] = AgentRegistration(**d)
-    conn.commit()
-    conn.close()
-    return result
+    try:
+        rows = conn.execute("SELECT * FROM agents").fetchall()
+        result = {}
+        for r in rows:
+            d = dict(r)
+            d["authorized_resources"] = json.loads(d["authorized_resources"])
+            d["authorized_actions"] = json.loads(d["authorized_actions"])
+            d["processes_external_content"] = bool(d.get("processes_external_content", 0))
+            d["requires_human_approval"] = bool(d.get("requires_human_approval", 0))
+            raw_scope = d.get("scope_at_delegation")
+            d["scope_at_delegation"] = json.loads(raw_scope) if raw_scope else None
+            raw_contract = d.pop("behavioral_contract", None)
+            if raw_contract:
+                contract = json.loads(raw_contract)
+                d["max_requests_per_minute"] = contract.get("max_requests_per_minute")
+                d["allowed_time_windows"] = contract.get("allowed_time_windows")
+                d["max_consecutive_same_action"] = contract.get("max_consecutive_same_action")
+            # trust_ceiling comes directly from the column (float or None)
+            d["trust_ceiling"] = d.get("trust_ceiling")
+            d.pop("registered_at", None)
+            # Migrate: tokens stored before H2 are plaintext UUIDs. Hash them now and
+            # persist so future restarts don't need to re-migrate.
+            if d.get("token") and _UUID_RE.match(d["token"]):
+                hashed = hash_token(d["token"])
+                conn.execute(
+                    "UPDATE agents SET token=? WHERE agent_id=?",
+                    (hashed, d["agent_id"])
+                )
+                d["token"] = hashed
+            result[d["agent_id"]] = AgentRegistration(**d)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
 
 
 def delete_agent(agent_id: str):

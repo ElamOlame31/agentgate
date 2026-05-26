@@ -149,8 +149,8 @@ async def _periodic_cleanup():
     import asyncio
     while True:
         await asyncio.sleep(3600)
-        audit.cleanup_old_history(max_age_seconds=3600.0)
-        audit.cleanup_old_audit_log()
+        await asyncio.to_thread(audit.cleanup_old_history, max_age_seconds=3600.0)
+        await asyncio.to_thread(audit.cleanup_old_audit_log)
         # Evict expired scan results to prevent unbounded memory growth
         now = time.time()
         expired = [aid for aid, s in _recent_scans.items() if now - s["ts"] > _SCAN_TTL]
@@ -164,8 +164,8 @@ async def _periodic_cleanup():
 async def lifespan(app: FastAPI):
     import asyncio
     audit.init_db()
-    audit.cleanup_old_history(max_age_seconds=3600.0)
-    audit.cleanup_old_audit_log()
+    await asyncio.to_thread(audit.cleanup_old_history, max_age_seconds=3600.0)
+    await asyncio.to_thread(audit.cleanup_old_audit_log)
     init_policy_table()
     _agents.update(audit.load_all_agents())
     approvals.set_broadcast_callback(_ws_broadcast)
@@ -1007,7 +1007,8 @@ async def websocket_endpoint(ws: WebSocket, key: str = Query(default="")):
     # Browsers always send Origin; non-browser WebSocket clients (SDK, curl) don't,
     # so we only block when Origin is present and not in the allow-list.
     origin = ws.headers.get("origin", "")
-    if origin and origin not in _ALLOWED_ORIGINS:
+    _allowed_origins_lower = {o.lower() for o in _ALLOWED_ORIGINS}
+    if origin and origin.lower() not in _allowed_origins_lower:
         await ws.close(code=4003)
         return
 

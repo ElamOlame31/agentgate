@@ -99,6 +99,9 @@ def _auto_deny(request_id: str):
                 pass
 
 
+_timers: Dict[str, threading.Timer] = {}
+
+
 def create_pending(request_id: str, agent_id: str, action: str,
                    resource: str, explanation: str, trust_score: float) -> PendingApproval:
     approval = PendingApproval(request_id, agent_id, action, resource, explanation, trust_score)
@@ -108,6 +111,7 @@ def create_pending(request_id: str, agent_id: str, action: str,
                     trust_score, approval.created_at + TIMEOUT_SECONDS)
     t = threading.Timer(TIMEOUT_SECONDS, _auto_deny, args=(request_id,))
     t.daemon = True
+    _timers[request_id] = t
     t.start()
     return approval
 
@@ -124,6 +128,9 @@ def get_all_pending() -> list:
 
 def approve(request_id: str) -> bool:
     broadcast_data = None
+    t = _timers.pop(request_id, None)
+    if t:
+        t.cancel()
     with _lock:
         approval = _store.get(request_id)
         if not approval or approval.status != "PENDING":
@@ -159,6 +166,9 @@ def cleanup_resolved(max_age_seconds: float = 3600.0):
 
 def deny(request_id: str) -> bool:
     broadcast_data = None
+    t = _timers.pop(request_id, None)
+    if t:
+        t.cancel()
     with _lock:
         approval = _store.get(request_id)
         if not approval or approval.status != "PENDING":
