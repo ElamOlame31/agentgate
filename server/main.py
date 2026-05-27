@@ -170,6 +170,7 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(audit.cleanup_old_history, max_age_seconds=3600.0)
     await asyncio.to_thread(audit.cleanup_old_audit_log)
     await asyncio.to_thread(audit.cleanup_expired_quarantines)
+    await asyncio.to_thread(audit.cleanup_old_request_history)
     init_policy_table()
     _agents.update(audit.load_all_agents())
     _quarantine.load_from_persistence(audit.load_active_quarantines())

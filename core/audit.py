@@ -272,6 +272,17 @@ def get_agent_request_history(agent_id: str, window_seconds: float = 60.0) -> li
     return [dict(r) for r in rows]
 
 
+def cleanup_old_request_history(retention_seconds: float = 86_400.0) -> int:
+    """Delete request_history rows older than retention_seconds. Returns row count deleted."""
+    cutoff = time.time() - retention_seconds
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("DELETE FROM request_history WHERE timestamp < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 TOKEN_TTL = max(60.0, float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600))))
 
 
