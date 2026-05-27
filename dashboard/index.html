@@ -554,6 +554,56 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
 .tmpl-btn:hover { background:rgba(0,212,255,.12); border-color:rgba(0,212,255,.4); color:var(--cyan); }
 .tmpl-btn:disabled { opacity:.4; cursor:default; }
 
+/* ── Quarantine Panel ─────────────────────────────────────────────────────── */
+#quarantine-panel {
+  display: none;
+  background: rgba(255,59,92,0.05);
+  border-bottom: 1px solid rgba(255,59,92,0.3);
+  flex-shrink: 0;
+  overflow-y: auto;
+  max-height: 200px;
+}
+.quarantine-head {
+  padding: 8px 16px;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,59,92,0.1);
+  border-bottom: 1px solid rgba(255,59,92,0.2);
+  font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--red); font-weight: 700;
+  position: sticky; top: 0;
+}
+.quarantine-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--red); box-shadow: 0 0 8px var(--red);
+  animation: blinkRed 0.7s infinite;
+}
+@keyframes blinkRed { 0%,100%{opacity:1;} 50%{opacity:.2;} }
+.quarantine-count {
+  margin-left: auto;
+  background: var(--red); color: #fff;
+  font-size: 9px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px;
+}
+.quarantine-item {
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255,59,92,0.12);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px; align-items: center;
+  animation: rowIn 200ms ease-out;
+}
+.quarantine-item:hover { background: rgba(255,59,92,0.04); }
+.quarantine-agent { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--red); }
+.quarantine-trigger { font-family: var(--mono); font-size: 10px; color: var(--text2); margin-top: 2px; }
+.quarantine-timer { font-family: var(--mono); font-size: 9px; color: var(--red); margin-top: 3px; opacity: 0.7; }
+.btn-release {
+  background: rgba(255,59,92,0.12); border: 1px solid rgba(255,59,92,0.35);
+  color: var(--red); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  padding: 5px 12px; border-radius: 4px; cursor: pointer; letter-spacing: 0.05em;
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+.btn-release:hover { background: rgba(255,59,92,0.28); box-shadow: 0 0 10px rgba(255,59,92,0.25); }
+
 /* ── Login Overlay ──────────────────────────────────────────────────────────── */
 #login-overlay {
   position: fixed; inset: 0; z-index: 9999;
@@ -708,6 +758,15 @@ canvas#mainChart { width: 100%; height: 100%; display: block; }
             <span class="pending-count" id="pending-count">0</span>
           </div>
           <div id="pending-list"></div>
+        </div>
+        <!-- Quarantine Panel -->
+        <div id="quarantine-panel">
+          <div class="quarantine-head">
+            <span class="quarantine-dot"></span>
+            QUARANTINED AGENTS
+            <span class="quarantine-count" id="quarantine-count">0</span>
+          </div>
+          <div id="quarantine-list"></div>
         </div>
         <div id="feed"></div>
       </div>
@@ -1291,6 +1350,9 @@ function renderAgentPanel(agents) {
     const depthBadge = a.delegation_depth > 0
       ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,149,0,.12);color:var(--orange);margin-left:4px;">D${a.delegation_depth}</span>`
       : '';
+    const qBadge = a.quarantined
+      ? `<span style="font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(255,59,92,.2);color:var(--red);margin-left:4px;animation:blinkRed 0.7s infinite;">QUAR</span>`
+      : '';
     const chainLine = a.delegation_depth > 0 && a.chain
       ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(a.chain)}">${esc(a.chain)}</div>`
       : '';
@@ -1309,7 +1371,7 @@ function renderAgentPanel(agents) {
         <div class="ac-top">
           <span class="ac-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
           <span class="ac-name" title="${esc(a.name)}">${esc(a.agent_id)}</span>
-          ${depthBadge}
+          ${depthBadge}${qBadge}
         </div>
         ${chainLine}
         <div class="ac-sub">${esc(a.declared_purpose.slice(0,32))}…</div>
@@ -1342,6 +1404,103 @@ async function refreshAgents() {
     await refreshBaselines();
     renderAgentPanel(_allAgents);
     if (currentScenario === 'demo2') renderDelegationTree(_allAgents);
+  } catch(e) {}
+}
+
+// ── Quarantine ────────────────────────────────────────────────────────────
+
+const _quarantineItems = {};
+const _quarantineTimers = {};
+
+function renderQuarantinePanel() {
+  const panel = document.getElementById('quarantine-panel');
+  const list  = document.getElementById('quarantine-list');
+  const count = document.getElementById('quarantine-count');
+  const active = Object.values(_quarantineItems);
+  count.textContent = active.length;
+  panel.style.display = active.length > 0 ? 'block' : 'none';
+  list.innerHTML = active.map(q => `
+    <div class="quarantine-item" id="qitem-${esc(q.agent_id)}">
+      <div class="quarantine-info">
+        <div class="quarantine-agent">⛔ ${esc(q.agent_id)}</div>
+        <div class="quarantine-trigger">trigger: ${esc(q.trigger)} · violations: ${q.violation_count}</div>
+        <div class="quarantine-timer" id="qtimer-${esc(q.agent_id)}">
+          expires in ${fmtSec(q.remaining_seconds)}
+        </div>
+      </div>
+      <div>
+        <button class="btn-release" onclick="releaseQuarantine('${esc(q.agent_id)}')">Release</button>
+      </div>
+    </div>`).join('');
+}
+
+function fmtSec(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+function startQuarantineTimer(agentId, expiresAt) {
+  if (_quarantineTimers[agentId]) clearInterval(_quarantineTimers[agentId]);
+  _quarantineTimers[agentId] = setInterval(() => {
+    const remaining = expiresAt - Date.now() / 1000;
+    const el = document.getElementById('qtimer-' + agentId);
+    if (remaining <= 0) {
+      clearInterval(_quarantineTimers[agentId]);
+      delete _quarantineTimers[agentId];
+      delete _quarantineItems[agentId];
+      renderQuarantinePanel();
+      refreshAgents();
+    } else if (el) {
+      el.textContent = 'expires in ' + fmtSec(remaining);
+    }
+  }, 1000);
+}
+
+function upsertQuarantine(q) {
+  _quarantineItems[q.agent_id] = q;
+  startQuarantineTimer(q.agent_id, q.expires_at);
+  renderQuarantinePanel();
+  refreshAgents();
+}
+
+function removeQuarantine(agentId) {
+  delete _quarantineItems[agentId];
+  if (_quarantineTimers[agentId]) {
+    clearInterval(_quarantineTimers[agentId]);
+    delete _quarantineTimers[agentId];
+  }
+  renderQuarantinePanel();
+  refreshAgents();
+}
+
+async function releaseQuarantine(agentId) {
+  try {
+    const r = await fetch(`${API}/agents/${encodeURIComponent(agentId)}/quarantine`, {
+      method: 'DELETE',
+      headers: getApiHeaders(),
+    });
+    if (r.ok) {
+      removeQuarantine(agentId);
+      showToast(`${agentId} released from quarantine`, 'success');
+    } else {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      showToast(`Release failed: ${err.detail || r.status}`, 'error');
+    }
+  } catch(e) {
+    showToast('Release failed: ' + e.message, 'error');
+  }
+}
+
+async function refreshQuarantines() {
+  try {
+    const r = await fetch(`${API}/quarantines`, { headers: getApiHeaders() });
+    if (!r.ok) return;
+    const qs = await r.json();
+    qs.forEach(q => {
+      if (!_quarantineItems[q.agent_id]) {
+        upsertQuarantine(q);
+      }
+    });
   } catch(e) {}
 }
 
@@ -1587,6 +1746,17 @@ function connect() {
       addPending(msg.data);
     } else if (msg.type === 'approval_resolved') {
       resolveApprovalUI(msg.data);
+    } else if (msg.type === 'quarantine') {
+      const q = msg.data;
+      if (q.event === 'released') {
+        removeQuarantine(q.agent_id);
+        showToast(`${q.agent_id} released from quarantine`, 'success');
+      } else {
+        upsertQuarantine(q);
+        if (q.event === 'quarantined') showToast(`⛔ ${q.agent_id} QUARANTINED: ${q.trigger}`, 'error');
+        else if (q.event === 'extended')  showToast(`⚠ Quarantine extended: ${q.agent_id}`, 'error');
+        else if (q.event === 'manual')    showToast(`⛔ ${q.agent_id} manually quarantined`, 'error');
+      }
     }
   };
 }
@@ -1659,6 +1829,7 @@ function submitLogin() {
   refreshAgents();
   refreshPolicies();
   refreshPending();
+  refreshQuarantines();
 }
 
 document.getElementById('login-key-input').addEventListener('keydown', e => {
@@ -1774,8 +1945,10 @@ connect();
 refreshAgents();
 refreshPolicies();
 refreshPending();
+refreshQuarantines();
 setInterval(refreshAgents, 8000);
 setInterval(refreshPending, 5000);
+setInterval(refreshQuarantines, 15000);
 window.addEventListener('resize', drawChart);
 </script>
 </body>

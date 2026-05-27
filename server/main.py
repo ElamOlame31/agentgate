@@ -95,6 +95,7 @@ from core.alerts import (
 )
 from core.report import generate_pdf, generate_csv
 from core import approvals
+from core import quarantine as _quarantine
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
 
 # Persistent agent registry (loaded from SQLite on startup)
@@ -158,6 +159,8 @@ async def _periodic_cleanup():
             _recent_scans.pop(aid, None)
         # Evict resolved approval records older than 1 hour
         approvals.cleanup_resolved(max_age_seconds=3600.0)
+        # Prune expired quarantine rows from SQLite
+        await asyncio.to_thread(audit.cleanup_expired_quarantines)
 
 
 @asynccontextmanager
@@ -166,8 +169,10 @@ async def lifespan(app: FastAPI):
     audit.init_db()
     await asyncio.to_thread(audit.cleanup_old_history, max_age_seconds=3600.0)
     await asyncio.to_thread(audit.cleanup_old_audit_log)
+    await asyncio.to_thread(audit.cleanup_expired_quarantines)
     init_policy_table()
     _agents.update(audit.load_all_agents())
+    _quarantine.load_from_persistence(audit.load_active_quarantines())
     approvals.set_broadcast_callback(_ws_broadcast)
     cleanup_task = asyncio.create_task(_periodic_cleanup())
     api_key = _get_api_key()
@@ -470,7 +475,60 @@ async def revoke_agent_chain(request: Request, agent_id: str):
     }
 
 
+# ── Quarantine Endpoints ────────────────────────────────────────────────────
+
+@app.get("/quarantines", dependencies=[Depends(require_api_key)])
+@limiter.limit("60/minute")
+async def list_quarantines(request: Request):
+    """List all active quarantines."""
+    return _quarantine.get_all()
+
+
+@app.get("/agents/{agent_id}/quarantine", dependencies=[Depends(require_api_key)])
+async def get_quarantine(agent_id: str):
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    rec = _quarantine.get_record(agent_id)
+    if rec is None:
+        return {"quarantined": False, "agent_id": agent_id}
+    return {"quarantined": True, **rec.to_dict()}
+
+
+class QuarantineManualRequest(BaseModel):
+    trigger: str = "MANUAL"
+    permanent: bool = False
+
+
+@app.post("/agents/{agent_id}/quarantine", dependencies=[Depends(require_admin_key)])
+@limiter.limit("20/minute")
+async def quarantine_agent(request: Request, agent_id: str, body: QuarantineManualRequest):
+    """Manually quarantine an agent (admin only)."""
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    rec = _quarantine.quarantine(agent_id, body.trigger, permanent=body.permanent)
+    await asyncio.to_thread(audit.save_quarantine, rec)
+    await manager.broadcast({"type": "quarantine", "data": {"event": "manual", **rec.to_dict()}})
+    print(f"[AgentGate] MANUAL QUARANTINE {agent_id} trigger={body.trigger}", flush=True)
+    return rec.to_dict()
+
+
+@app.delete("/agents/{agent_id}/quarantine", dependencies=[Depends(require_admin_key)])
+@limiter.limit("20/minute")
+async def release_quarantine(request: Request, agent_id: str):
+    """Release an agent from quarantine (admin only)."""
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    released = _quarantine.release(agent_id)
+    if not released:
+        raise HTTPException(status_code=404, detail="Agent is not currently quarantined")
+    await asyncio.to_thread(audit.delete_quarantine, agent_id)
+    await manager.broadcast({"type": "quarantine", "data": {"event": "released", "agent_id": agent_id}})
+    print(f"[AgentGate] QUARANTINE RELEASED {agent_id}", flush=True)
+    return {"status": "released", "agent_id": agent_id}
+
+
 def _agent_list():
+    quarantined_ids = {r["agent_id"] for r in _quarantine.get_all()}
     return [
         {
             "agent_id": a.agent_id,
@@ -479,6 +537,7 @@ def _agent_list():
             "delegation_depth": a.delegation_depth,
             "delegated_by": a.delegated_by,
             "chain": chain_summary(a.agent_id, _agents),
+            "quarantined": a.agent_id in quarantined_ids,
         }
         for a in _agents.values()
     ]
@@ -561,6 +620,41 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 raise HTTPException(status_code=401, detail="Invalid agent token")
             if agent.token_expires_at and time.time() > agent.token_expires_at:
                 raise HTTPException(status_code=401, detail="Agent token expired — re-register")
+
+    # ── Quarantine check — hard block before scoring ──────────────────────
+    q_record = _quarantine.get_record(body.agent_id)
+    if q_record:
+        from core.models import TrustBreakdown, ResourceSensitivity
+        from core.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
+        sensitivity = classify_resource_sensitivity(body.resource, body.action)
+        breakdown = TrustBreakdown(
+            identity_score=0, delegation_score=0,
+            purpose_alignment_score=0, behavioral_score=0,
+            resource_sensitivity=sensitivity,
+            final_score=0, threshold_required=SENSITIVITY_THRESHOLDS[sensitivity],
+        )
+        remaining = int(q_record.remaining_seconds())
+        response = AuthorizationResponse(
+            request_id=body.request_id,
+            agent_id=body.agent_id,
+            action=body.action,
+            resource=body.resource,
+            decision=Decision.DENY,
+            trust_breakdown=breakdown,
+            explanation=(
+                f"Agent quarantined — all actions blocked for {remaining}s. "
+                f"Trigger: {q_record.trigger}. "
+                f"Release via dashboard or DELETE /agents/{body.agent_id}/quarantine."
+            ),
+            attack_flags=["QUARANTINED", f"QUARANTINE_TRIGGER:{q_record.trigger}"],
+        )
+        await asyncio.to_thread(audit.log_decision, response)
+        await manager.broadcast({"type": "decision", "data": response.model_dump()})
+        fire_alert(
+            "DENY", body.agent_id, body.action, body.resource,
+            response.explanation, response.attack_flags, 0,
+        )
+        return response
 
     # ── Policy check FIRST (hard rules override trust score) ──────────────
     policy_match = check_policies(body.agent_id, body.action, body.resource)
@@ -698,6 +792,33 @@ async def authorize(request: Request, body: AuthorizationRequest):
         attack_flags=flags,
         injection_score=injection_risk if injection_risk > 0 else None,
     )
+
+    # ── Quarantine triggers ────────────────────────────────────────────────
+    if decision == Decision.DENY:
+        q_trigger = _quarantine.should_quarantine_on_flags(flags)
+        if q_trigger is None:
+            q_trigger = _quarantine.record_deny(body.agent_id)
+        if q_trigger:
+            q_rec = _quarantine.quarantine(body.agent_id, q_trigger)
+            await asyncio.to_thread(audit.save_quarantine, q_rec)
+            print(
+                f"[AgentGate] QUARANTINED {body.agent_id} "
+                f"trigger={q_trigger} expires_in={int(q_rec.remaining_seconds())}s",
+                flush=True,
+            )
+            await manager.broadcast({
+                "type": "quarantine",
+                "data": {
+                    "event": "quarantined" if q_rec.violation_count == 1 else "extended",
+                    **q_rec.to_dict(),
+                },
+            })
+            fire_alert(
+                "QUARANTINE", body.agent_id, body.action, body.resource,
+                f"Agent quarantined: {q_trigger}",
+                ["QUARANTINED", f"QUARANTINE_TRIGGER:{q_trigger}"],
+                0,
+            )
 
     await asyncio.to_thread(audit.log_decision, response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})

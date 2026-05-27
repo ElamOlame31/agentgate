@@ -123,6 +123,16 @@ def init_db():
             window_count INTEGER DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_quarantine (
+            agent_id        TEXT PRIMARY KEY,
+            quarantined_at  REAL NOT NULL,
+            expires_at      REAL NOT NULL,
+            trigger         TEXT NOT NULL,
+            violation_count INTEGER DEFAULT 1,
+            extended_count  INTEGER DEFAULT 0
+        )
+    """)
     # Indexes — all idempotent (IF NOT EXISTS), safe to run on existing DBs.
     # request_history: queried by agent_id + timestamp on every /authorize call.
     conn.execute("""
@@ -531,6 +541,53 @@ def load_active_pending_approvals() -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Quarantine Persistence ────────────────────────────────────────────────────
+
+def save_quarantine(record) -> None:
+    """Upsert a quarantine record. Accepts QuarantineRecord or dict."""
+    if hasattr(record, "to_dict"):
+        d = record.to_dict()
+    else:
+        d = record
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT OR REPLACE INTO agent_quarantine
+        (agent_id, quarantined_at, expires_at, trigger, violation_count, extended_count)
+        VALUES (?,?,?,?,?,?)
+    """, (
+        d["agent_id"], d["quarantined_at"], d["expires_at"],
+        d["trigger"], d["violation_count"], d["extended_count"],
+    ))
+    conn.commit()
+    conn.close()
+
+
+def load_active_quarantines() -> list:
+    """Return quarantine records whose expires_at > now (startup reload)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM agent_quarantine WHERE expires_at > ?", (time.time(),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_quarantine(agent_id: str) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM agent_quarantine WHERE agent_id=?", (agent_id,))
+    conn.commit()
+    conn.close()
+
+
+def cleanup_expired_quarantines() -> None:
+    """Prune quarantine rows that have expired — called by the hourly cleanup task."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM agent_quarantine WHERE expires_at <= ?", (time.time(),))
+    conn.commit()
+    conn.close()
 
 
 def get_stats() -> dict:
