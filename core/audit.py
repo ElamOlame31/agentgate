@@ -133,6 +133,20 @@ def init_db():
             extended_count  INTEGER DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merkle_checkpoints (
+            batch_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_rowid  INTEGER NOT NULL,
+            to_rowid    INTEGER NOT NULL,
+            root_hash   TEXT NOT NULL,
+            sealed_at   REAL NOT NULL,
+            entry_count INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mc_rowid
+        ON merkle_checkpoints(from_rowid, to_rowid)
+    """)
     # Indexes — all idempotent (IF NOT EXISTS), safe to run on existing DBs.
     # request_history: queried by agent_id + timestamp on every /authorize call.
     conn.execute("""
@@ -281,6 +295,143 @@ def cleanup_old_request_history(retention_seconds: float = 86_400.0) -> int:
     conn.commit()
     conn.close()
     return deleted
+
+
+# ── Merkle tree audit batching ─────────────────────────────────────────────────
+
+MERKLE_BATCH_SIZE = int(os.getenv("AGENTGATE_MERKLE_BATCH_SIZE", "16"))
+
+
+def _merkle_pending(conn) -> list[tuple[int, str]]:
+    """Return (rowid, full_json) for entries not yet covered by a checkpoint."""
+    last = conn.execute(
+        "SELECT to_rowid FROM merkle_checkpoints ORDER BY batch_id DESC LIMIT 1"
+    ).fetchone()
+    min_rowid = (last[0] + 1) if last else 1
+    rows = conn.execute(
+        "SELECT rowid, full_json FROM audit_log WHERE rowid >= ? ORDER BY rowid ASC",
+        (min_rowid,)
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def seal_merkle_batch(force: bool = False) -> dict | None:
+    """
+    Seal the next MERKLE_BATCH_SIZE pending entries into a Merkle checkpoint.
+    Returns the checkpoint dict, or None if not enough entries (unless force=True).
+    force=True seals whatever is pending, even a partial batch.
+    """
+    from core.merkle import merkle_root as _root, leaf_hash as _leaf
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        pending = _merkle_pending(conn)
+        batch = pending[:MERKLE_BATCH_SIZE]
+        if not force and len(batch) < MERKLE_BATCH_SIZE:
+            conn.rollback()
+            return None
+        if not batch:
+            conn.rollback()
+            return None
+        leaf_hashes = [_leaf(json_str) for _, json_str in batch]
+        root = _root(leaf_hashes)
+        from_rowid, to_rowid = batch[0][0], batch[-1][0]
+        conn.execute(
+            "INSERT INTO merkle_checkpoints"
+            "(from_rowid, to_rowid, root_hash, sealed_at, entry_count)"
+            " VALUES (?,?,?,?,?)",
+            (from_rowid, to_rowid, root, time.time(), len(batch)),
+        )
+        conn.commit()
+        return {
+            "root_hash": root,
+            "from_rowid": from_rowid,
+            "to_rowid": to_rowid,
+            "entry_count": len(batch),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_merkle_status() -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        batch_count = conn.execute("SELECT COUNT(*) FROM merkle_checkpoints").fetchone()[0]
+        latest = conn.execute(
+            "SELECT batch_id, root_hash, sealed_at, entry_count, to_rowid"
+            " FROM merkle_checkpoints ORDER BY batch_id DESC LIMIT 1"
+        ).fetchone()
+        if latest:
+            sealed_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE rowid <= ?", (latest[4],)
+            ).fetchone()[0]
+            pending = total - sealed_count
+        else:
+            pending = total
+        return {
+            "total_audit_entries": total,
+            "total_batches": batch_count,
+            "pending_entries": pending,
+            "batch_size": MERKLE_BATCH_SIZE,
+            "latest_batch": {
+                "batch_id": latest[0],
+                "root_hash": latest[1],
+                "sealed_at": latest[2],
+                "entry_count": latest[3],
+            } if latest else None,
+        }
+    finally:
+        conn.close()
+
+
+def get_merkle_proof(entry_id: str) -> dict | None:
+    """
+    Return an inclusion proof for the given audit entry.
+    Returns None if the entry is not found or not yet sealed.
+    """
+    from core.merkle import merkle_proof as _proof, leaf_hash as _leaf, verify_proof as _verify
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT rowid, full_json FROM audit_log WHERE id=?", (entry_id,)
+        ).fetchone()
+        if not row:
+            return None
+        entry_rowid, entry_json = row
+        batch = conn.execute(
+            "SELECT batch_id, from_rowid, to_rowid, root_hash, entry_count"
+            " FROM merkle_checkpoints"
+            " WHERE from_rowid <= ? AND to_rowid >= ? LIMIT 1",
+            (entry_rowid, entry_rowid),
+        ).fetchone()
+        if not batch:
+            return None
+        batch_id, from_rowid, to_rowid, root_hash, entry_count = batch
+        entries = conn.execute(
+            "SELECT rowid, full_json FROM audit_log"
+            " WHERE rowid >= ? AND rowid <= ? ORDER BY rowid ASC",
+            (from_rowid, to_rowid),
+        ).fetchall()
+        leaf_hashes = [_leaf(r[1]) for r in entries]
+        index = next(i for i, r in enumerate(entries) if r[0] == entry_rowid)
+        proof = _proof(leaf_hashes, index)
+        this_leaf = _leaf(entry_json)
+        valid = _verify(this_leaf, proof, root_hash)
+        return {
+            "entry_id": entry_id,
+            "batch_id": batch_id,
+            "leaf_hash": this_leaf,
+            "proof": proof,
+            "root_hash": root_hash,
+            "entry_count": entry_count,
+            "valid": valid,
+        }
+    finally:
+        conn.close()
 
 
 TOKEN_TTL = max(60.0, float(os.getenv("AGENTGATE_TOKEN_TTL", str(24 * 3600))))
