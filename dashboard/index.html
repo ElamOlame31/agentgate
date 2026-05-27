@@ -1170,6 +1170,41 @@ function addInjectionFeedItem(data) {
   while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
 }
 
+// ── Output sanitize feed item ────────────────────────────────────────────
+
+function addSanitizeFeedItem(data) {
+  const feed = document.getElementById('feed');
+  const row  = document.createElement('div');
+  const ts   = new Date(data.timestamp * 1000).toLocaleTimeString();
+  const sev  = data.highest_severity;
+  const isHigh = sev === 'critical' || sev === 'high';
+  const col  = sev === 'critical' ? 'var(--red)'
+              : sev === 'high'    ? 'var(--orange)'
+              : sev === 'medium'  ? 'var(--cyan)'
+              : 'var(--green)';
+  const dot  = sev === 'critical' ? 'deny'
+              : sev === 'high'    ? 'escalate'
+              : 'permit';
+  const cats = (data.categories_detected || []).join(', ') || 'clean';
+  row.className = 'req-row' + (isHigh ? ' blocked' : '');
+  row.style.borderLeft = isHigh ? `3px solid ${col}` : '';
+  row.innerHTML = `
+    <span class="req-dot ${dot}"></span>
+    <span class="req-time">${esc(ts)}</span>
+    <span class="req-agent" title="${esc(data.agent_id)}">${esc(data.agent_id)}</span>
+    <span class="req-path">
+      <span class="action" style="background:${col};color:${isHigh?'#fff':'#000'};padding:1px 5px;border-radius:3px;font-size:9px;">SANITIZE</span>
+      output (${data.original_length || 0} chars)
+    </span>
+    <span class="score-badge" style="background:${isHigh?'rgba(255,59,92,.15)':'rgba(0,208,132,.12)'};color:${col};">
+      ${data.threat_count} threat${data.threat_count !== 1 ? 's' : ''}
+    </span>
+    <span class="req-reason">${esc(sev.toUpperCase())} · ${esc(cats)}</span>
+  `;
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
 // ── Last decision ─────────────────────────────────────────────────────────
 
 function updateLastDecision(data) {
@@ -1742,6 +1777,8 @@ function connect() {
       }
     } else if (msg.type === 'injection') {
       addInjectionFeedItem(msg.data);
+    } else if (msg.type === 'sanitize') {
+      addSanitizeFeedItem(msg.data);
     } else if (msg.type === 'pending') {
       addPending(msg.data);
     } else if (msg.type === 'approval_resolved') {

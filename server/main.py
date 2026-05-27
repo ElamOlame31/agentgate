@@ -75,7 +75,7 @@ async def require_admin_key(request: Request):
 
 from core.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
-    ContentScanRequest, ContentScanResponse,
+    ContentScanRequest, ContentScanResponse, OutputSanitizeRequest,
 )
 from core import audit, trust_engine
 from core.audit import hash_token
@@ -890,6 +890,94 @@ async def scan_content_endpoint(request: Request, body: ContentScanRequest):
         evidence=result.evidence,
         scanned=True,
     )
+
+
+# ── Output Sanitization ─────────────────────────────────────────────────────
+
+@app.post("/sanitize", dependencies=[Depends(require_api_key)])
+@limiter.limit("60/minute")
+async def sanitize_output_endpoint(request: Request, body: OutputSanitizeRequest):
+    """
+    Scan agent-produced content for credential leaks, PII, instruction tags,
+    imperative injection phrases, and exfiltration URLs. Returns a sanitized
+    copy of the content with all findings redacted.
+    """
+    from core.output_sanitizer import sanitize as _sanitize
+
+    agent = _agents.get(body.agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not registered")
+
+    # Token validation — same guard as /authorize
+    if agent.token is None:
+        raise HTTPException(status_code=401, detail="Agent token has been revoked")
+    if agent.token:
+        if is_jti(agent.token):
+            incoming = body.token or ""
+            if not is_jwt_format(incoming):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            try:
+                claims = verify_agent_jwt(incoming)
+            except _jwt.ExpiredSignatureError:
+                raise HTTPException(status_code=401, detail="Agent token expired — re-register")
+            except _jwt.InvalidTokenError:
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            if not hmac.compare_digest(claims.get("jti", ""), agent.token):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+        else:
+            if not hmac.compare_digest(hash_token(body.token or ""), agent.token):
+                raise HTTPException(status_code=401, detail="Invalid agent token")
+            if agent.token_expires_at and time.time() > agent.token_expires_at:
+                raise HTTPException(status_code=401, detail="Agent token expired — re-register")
+
+    result = await asyncio.to_thread(_sanitize, body.content)
+    request_id = str(uuid.uuid4())
+    ts = time.time()
+
+    threat_dicts = [
+        {
+            "category":    t.category,
+            "subcategory": t.subcategory,
+            "severity":    t.severity,
+            "excerpt":     t.excerpt,
+        }
+        for t in result.threats
+    ]
+
+    await manager.broadcast({
+        "type": "sanitize",
+        "data": {
+            "request_id":         request_id,
+            "agent_id":           body.agent_id,
+            "threat_count":       result.threat_count,
+            "highest_severity":   result.highest_severity,
+            "categories_detected": result.categories_detected,
+            "original_length":    result.original_length,
+            "timestamp":          ts,
+        },
+    })
+
+    if result.highest_severity in ("high", "critical"):
+        fire_alert(
+            "OUTPUT_" + result.highest_severity.upper(),
+            body.agent_id, "output_sanitize", "agent_output",
+            f"Output contains {result.threat_count} threat(s): "
+            f"{', '.join(result.categories_detected)}",
+            [f"OUTPUT_{c}" for c in result.categories_detected],
+            0,
+        )
+
+    return {
+        "request_id":         request_id,
+        "agent_id":           body.agent_id,
+        "sanitized":          result.sanitized,
+        "threat_count":       result.threat_count,
+        "highest_severity":   result.highest_severity,
+        "categories_detected": result.categories_detected,
+        "threats":            threat_dicts,
+        "original_length":    result.original_length,
+        "timestamp":          ts,
+    }
 
 
 def _build_unknown_agent_response(request: AuthorizationRequest) -> AuthorizationResponse:

@@ -66,6 +66,12 @@ class ContentScanRequest(BaseModel):
     declared_purpose: Optional[str] = ""
 
 
+class OutputSanitizeRequest(BaseModel):
+    agent_id: str
+    content: str = Field(max_length=100_000)
+    token: Optional[str] = None
+
+
 class ContentScanResponse(BaseModel):
     level: str          # "clean", "suspicious", "injection"
     confidence: float
