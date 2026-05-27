@@ -375,12 +375,11 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     score = breakdown.final_score
     threshold = breakdown.threshold_required
 
-    # Hard deny on high-confidence kill chain patterns
-    # BULK_READ_THEN_* and READ_THEN_DELETE indicate data theft with near certainty.
-    # SENSITIVITY_RAMP and DIRECTORY_SWEEP fall through to score-based ESCALATE.
-    if any("KILL_CHAIN:BULK_READ_THEN_" in f for f in flags):
+    # Hard deny on high-confidence kill chain patterns — both fast (5-min) and
+    # cross-session (24h) variants. SENSITIVITY_RAMP and DIRECTORY_SWEEP use scores.
+    if any("BULK_READ_THEN_" in f for f in flags):
         return Decision.DENY
-    if any("KILL_CHAIN:READ_THEN_DELETE" in f for f in flags):
+    if any("READ_THEN_DELETE" in f for f in flags):
         return Decision.DENY
 
     # Hard deny on behavioral contract violations — agent exceeded its own declared limits

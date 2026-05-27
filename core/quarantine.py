@@ -38,6 +38,9 @@ HARD_QUARANTINE_FLAGS: frozenset = frozenset({
     "KILL_CHAIN:BULK_READ_THEN_EXFIL",
     "KILL_CHAIN:BULK_READ_THEN_DESTROY",
     "KILL_CHAIN:READ_THEN_DELETE",
+    "KILL_CHAIN:CROSS_SESSION:BULK_READ_THEN_EXFIL",
+    "KILL_CHAIN:CROSS_SESSION:BULK_READ_THEN_DESTROY",
+    "KILL_CHAIN:CROSS_SESSION:READ_THEN_DELETE",
 })
 
 
@@ -170,10 +173,11 @@ def record_deny(agent_id: str) -> Optional[str]:
 
 
 def should_quarantine_on_flags(flags: list) -> Optional[str]:
-    """Return the first hard-trigger flag found, or None."""
+    """Return the canonical hard-trigger flag matched (prefix), or None."""
     for flag in flags:
-        if flag in HARD_QUARANTINE_FLAGS:
-            return flag
+        for hf in HARD_QUARANTINE_FLAGS:
+            if flag.startswith(hf):
+                return hf
     return None
 
 
