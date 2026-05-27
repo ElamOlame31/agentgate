@@ -41,7 +41,7 @@ INJECTION_PATTERNS = [
     r"your\s+role\s+has\s+changed",
 
     # Exfiltration triggers
-    r"send\s+(all|the|this|these)\s+(data|files?|content|information)",
+    r"send\s+(all|the|this|these)(\s+the)?\s+(data|files?|content|information)",
     r"exfiltrat\w+",
     r"forward\s+(all|the|this)\s+(data|files?|content)",
     r"upload\s+(all|the|this)\s+(data|files?|content)",
