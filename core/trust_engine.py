@@ -302,6 +302,8 @@ def compute_trust(
     request: AuthorizationRequest,
     agents: dict = None,
     injection_risk: float = 0.0,
+    contagion_penalty: float = 0.0,
+    contagion_flags: list = None,
 ) -> tuple[TrustBreakdown, list[str]]:
     all_flags = []
 
@@ -345,6 +347,10 @@ def compute_trust(
         penalty = min(50.0, (injection_risk - 0.5) * 100.0)
         beh_score = max(0.0, beh_score - penalty)
         beh_flags.append(f"PRIOR_INJECTION_RISK:{round(injection_risk * 100)}%")
+    # Penalize behavioral score when a delegation neighbour is compromised (trust contagion)
+    if contagion_penalty > 0:
+        beh_score = max(0.0, beh_score - contagion_penalty)
+        beh_flags.extend(contagion_flags or [])
     all_flags.extend(beh_flags)
 
     sensitivity = classify_resource_sensitivity(request.resource, request.action)

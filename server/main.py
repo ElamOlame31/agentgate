@@ -96,6 +96,7 @@ from core.alerts import (
 from core.report import generate_pdf, generate_csv
 from core import approvals
 from core import quarantine as _quarantine
+from core import contagion as _contagion
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
 
 # Persistent agent registry (loaded from SQLite on startup)
@@ -512,6 +513,12 @@ async def quarantine_agent(request: Request, agent_id: str, body: QuarantineManu
     await asyncio.to_thread(audit.save_quarantine, rec)
     await manager.broadcast({"type": "quarantine", "data": {"event": "manual", **rec.to_dict()}})
     print(f"[AgentGate] MANUAL QUARANTINE {agent_id} trigger={body.trigger}", flush=True)
+    _affected = _contagion.propagate_quarantine(agent_id, _agents)
+    if _affected:
+        await manager.broadcast({
+            "type": "contagion",
+            "data": {"source_agent_id": agent_id, "affected_agent_ids": _affected, "trigger": body.trigger},
+        })
     return rec.to_dict()
 
 
@@ -525,9 +532,29 @@ async def release_quarantine(request: Request, agent_id: str):
     if not released:
         raise HTTPException(status_code=404, detail="Agent is not currently quarantined")
     await asyncio.to_thread(audit.delete_quarantine, agent_id)
+    _contagion.clear_contagion(agent_id)
     await manager.broadcast({"type": "quarantine", "data": {"event": "released", "agent_id": agent_id}})
     print(f"[AgentGate] QUARANTINE RELEASED {agent_id}", flush=True)
     return {"status": "released", "agent_id": agent_id}
+
+
+# ── Trust Contagion Endpoints ───────────────────────────────────────────────
+
+@app.get("/contagion", dependencies=[Depends(require_api_key)])
+@limiter.limit("60/minute")
+async def list_contagion(request: Request):
+    """Return all active contagion records (agents penalised due to a neighbour being quarantined)."""
+    return _contagion.get_all()
+
+
+@app.post("/agents/{agent_id}/contagion/clear", dependencies=[Depends(require_admin_key)])
+@limiter.limit("20/minute")
+async def clear_agent_contagion(request: Request, agent_id: str):
+    """Manually clear contagion penalties propagated FROM this agent (admin only)."""
+    if agent_id not in _agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    _contagion.clear_contagion(agent_id)
+    return {"status": "cleared", "agent_id": agent_id}
 
 
 def _agent_list():
@@ -744,9 +771,13 @@ async def authorize(request: Request, body: AuthorizationRequest):
     if recent_scan and (time.time() - recent_scan["ts"]) < _SCAN_TTL and recent_scan["level"] != "clean":
         injection_risk = recent_scan["score"]
 
+    # Trust contagion: apply penalty if a delegation neighbour is quarantined
+    contagion_penalty, contagion_flags = _contagion.get_contagion_penalty(body.agent_id)
+
     # compute_trust calls SQLite (request history, baselines) — run in thread pool
     breakdown, flags = await asyncio.to_thread(
-        trust_engine.compute_trust, agent, body, _agents, injection_risk
+        trust_engine.compute_trust, agent, body, _agents, injection_risk,
+        contagion_penalty, contagion_flags,
     )
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
@@ -816,6 +847,22 @@ async def authorize(request: Request, body: AuthorizationRequest):
                     **q_rec.to_dict(),
                 },
             })
+            # Propagate trust contagion to delegation neighbours
+            _affected = _contagion.propagate_quarantine(body.agent_id, _agents)
+            if _affected:
+                print(
+                    f"[AgentGate] CONTAGION propagated from {body.agent_id} "
+                    f"to {_affected}",
+                    flush=True,
+                )
+                await manager.broadcast({
+                    "type": "contagion",
+                    "data": {
+                        "source_agent_id": body.agent_id,
+                        "affected_agent_ids": _affected,
+                        "trigger": q_trigger,
+                    },
+                })
             fire_alert(
                 "QUARANTINE", body.agent_id, body.action, body.resource,
                 f"Agent quarantined: {q_trigger}",
