@@ -161,6 +161,8 @@ async def _periodic_cleanup():
         approvals.cleanup_resolved(max_age_seconds=3600.0)
         # Prune expired quarantine rows from SQLite
         await asyncio.to_thread(audit.cleanup_expired_quarantines)
+        # Seal any full Merkle batches accumulated since last cycle
+        await asyncio.to_thread(audit.seal_merkle_batch)
 
 
 @asynccontextmanager
@@ -1160,6 +1162,36 @@ async def export_audit(
 async def verify_audit_chain(request: Request):
     """Verify cryptographic integrity of the audit log HMAC chain."""
     return audit.verify_chain()
+
+
+@app.get("/audit/merkle/status", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def merkle_status(request: Request):
+    """Return Merkle checkpoint status: batch count, pending entries, latest root hash."""
+    return await asyncio.to_thread(audit.get_merkle_status)
+
+
+@app.get("/audit/merkle/verify/{entry_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def merkle_verify_entry(request: Request, entry_id: str):
+    """Return the Merkle inclusion proof for a specific audit entry."""
+    result = await asyncio.to_thread(audit.get_merkle_proof, entry_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Entry not found or not yet sealed into a Merkle batch."
+        )
+    return result
+
+
+@app.post("/audit/merkle/seal", dependencies=[Depends(require_admin_key)])
+@limiter.limit("10/minute")
+async def merkle_seal(request: Request):
+    """Force-seal the current pending entries into a Merkle batch (admin only)."""
+    result = await asyncio.to_thread(audit.seal_merkle_batch, True)
+    if result is None:
+        return {"sealed": False, "message": "No pending entries to seal."}
+    return {"sealed": True, **result}
 
 
 @app.post("/templates/{name}/apply", dependencies=[Depends(require_api_key)])
