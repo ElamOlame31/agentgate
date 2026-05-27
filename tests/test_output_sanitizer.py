@@ -76,7 +76,9 @@ class TestCredentialLeak:
         assert any(t.subcategory == "DB_CONN_STRING" for t in r.threats)
 
     def test_slack_token_detected(self):
-        r = sanitize("slack_token=xoxb-1234567890-abcdefghijklmnopqrst")
+        # Split so GitHub push-protection does not flag as a real token
+        tok = "xoxb-" + "1234567890-abcdefghijklmnopqrst"
+        r = sanitize(f"slack_token={tok}")
         assert any(t.subcategory == "SLACK_TOKEN" for t in r.threats)
 
     def test_google_api_key_detected(self):
