@@ -18,6 +18,16 @@ npm install agentgate-pdp      # TypeScript / Node.js
 
 ---
 
+## What builders are saying
+
+> *"We are studying AgentGate closely — the Merkle-chained artifact approach is a compelling pattern for high-stakes agent actions."*
+> — Kirill (Fenix), [ATAP](https://github.com/gugli4ifenix-design/atap) author
+
+> *"The pre-execution evidence framing is interesting — especially the distinction between authorization evidence that exists before consequence versus audit logs assembled afterward."*
+> — Dale Chou, agent governance researcher
+
+---
+
 ## The attack OAuth can't see
 
 Your LangGraph agent has a valid token. It reads 10 reports — each request is authorized. Then it tries to export everything. Each individual request looked clean. The kill chain only becomes visible across the sequence.
