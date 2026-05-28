@@ -55,6 +55,8 @@ OAuth checked *who the agent was*. AgentGate checks *what the sequence means*.
 
 ![AgentGate dashboard — kill chain detection in real time](demo_agentgate.gif)
 
+> **Stateful vs stateless:** Most governance tools — including Microsoft's Agent Governance Toolkit — evaluate each request independently. They cannot detect BULK_READ_THEN_EXFIL because no single request is suspicious. AgentGate tracks behavioral patterns across 24-hour sessions. The sequence is the attack. Only a stateful system can see it.
+
 ---
 
 ## Quick start
@@ -317,7 +319,9 @@ Templates are also accessible as one-click buttons in the dashboard.
 
 ## Tamper-proof audit trail
 
-Every authorization decision is logged and cryptographically chained with HMAC-SHA256. The audit trail can be exported as PDF or CSV for compliance review, and verified for integrity:
+Every authorization decision is sealed before the action executes — not logged afterward. The record precedes what it authorizes.
+
+Every decision is cryptographically chained with HMAC-SHA256. The audit trail can be exported as PDF or CSV for compliance review, and verified for integrity:
 
 ```bash
 # Verify the audit log has not been tampered with
@@ -470,22 +474,29 @@ AGENTGATE_AUDIT_RETENTION_DAYS=90
 
 ---
 
-## Why not OPA / OpenFGA / RBAC?
+## Why not OPA / OpenFGA / Microsoft AGT?
 
-Those tools answer: *"Can user X access resource Y?"* — static rules evaluated against static state.
+OPA and OpenFGA answer: *"Can user X access resource Y?"* — static rules evaluated against static state. Microsoft's Agent Governance Toolkit added agent-aware policies, but evaluates each request independently — it has no memory of what the agent did 4 minutes ago.
 
 AgentGate answers: *"Should this specific agent action be allowed right now, given what this agent has been doing and what it said its purpose is?"*
 
-| Capability | OPA / OpenFGA | AgentGate |
-|------------|---------------|-----------|
-| Static resource access control | ✓ | ✓ |
-| Purpose alignment (did the agent drift?) | ✗ | ✓ |
-| Delegation chain integrity | ✗ | ✓ |
-| Real-time behavioral velocity | ✗ | ✓ |
-| Prompt injection detection | ✗ | ✓ |
-| Human-in-the-loop approval | ✗ | ✓ |
-| Compliance audit trail (PDF/CSV) | ✗ | ✓ |
-| SIEM integration | via plugin | native |
+The record precedes what it authorizes.
+
+| Capability | OPA / OpenFGA | Microsoft AGT | AgentGate |
+|------------|---------------|---------------|-----------|
+| Static resource access control | ✓ | ✓ | ✓ |
+| Agent-aware policy evaluation | ✗ | ✓ | ✓ |
+| Stateful behavioral analysis (24h) | ✗ | ✗ | ✓ |
+| Kill chain detection across sessions | ✗ | ✗ | ✓ |
+| Purpose alignment (did the agent drift?) | ✗ | ✗ | ✓ |
+| Delegation chain integrity | ✗ | Partial | ✓ |
+| Prompt injection detection | ✗ | ✗ | ✓ |
+| Human-in-the-loop approval | ✗ | ✗ | ✓ |
+| Pre-execution Merkle audit seal | ✗ | ✗ | ✓ |
+| Compliance audit trail (PDF/CSV) | ✗ | Limited | ✓ |
+| SIEM integration | via plugin | ✗ | native |
+| Open source | ✓ | ✓ | ✓ |
+| Self-hosted | ✓ | ✓ | ✓ |
 
 Use OPA for your human users. Use AgentGate for your agents.
 
