@@ -280,18 +280,39 @@ tools = toolkit.wrap([get_customer, search_tickets])
 ### Vercel AI SDK
 
 ```typescript
-import { tool } from "ai";
+import { tool, streamText } from "ai";
 import { z } from "zod";
+import AgentGate from "agentgate-pdp";
+import { guardTool, guardTools } from "agentgate-pdp/vercel";
 
-const readReport = tool({
-  description: "Read a quarterly report",
-  parameters: z.object({ path: z.string() }),
-  execute: async ({ path }) => {
-    await gate.authorize("read", path, "AI assistant reading report");
-    return fs.readFile(path, "utf-8");
-  },
+const gate = new AgentGate({ url: "http://localhost:8000", apiKey: "your-key" });
+await gate.register({
+  agent_id:             "report_bot",
+  name:                 "ReportBot",
+  declared_purpose:     "Summarize quarterly business reports",
+  authorized_resources: ["/reports/*"],
+  authorized_actions:   ["read"],
 });
+
+// Option A — wrap a single tool
+const readReport = guardTool(gate, tool({
+  description: "Read a quarterly report",
+  parameters:  z.object({ path: z.string() }),
+  execute:     async ({ path }) => fs.readFile(path, "utf-8"),
+}), { action: "read", resourceParam: "path" });
+
+// Option B — wrap all tools at once (action inferred from name)
+const tools = guardTools(gate, {
+  readReport:      tool({ description: "...", parameters: z.object({ path: z.string() }), execute: async ({ path }) => ... }),
+  searchDocuments: tool({ description: "...", parameters: z.object({ query: z.string() }), execute: async ({ query }) => ... }),
+  exportSummary:   tool({ description: "...", parameters: z.object({ path: z.string() }), execute: async ({ path }) => ... }),
+});
+
+// Pass to streamText / generateText as usual
+const result = await streamText({ model, tools, prompt: "Summarize Q3 reports" });
 ```
+
+DENY throws `AgentGateDeniedError`. ESCALATE lets the tool run but annotates the result. The agent's `toolResults` will contain the annotation — no changes to your streaming setup.
 
 ---
 
