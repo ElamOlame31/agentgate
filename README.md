@@ -1,6 +1,8 @@
 # AgentGate
 
-**Your agent just read 847 files in 4 minutes. Your logs show 847 authorized requests. AgentGate saw a kill chain.**
+**The runtime authorization infrastructure every autonomous agent action passes through before it executes.**
+
+Your agent just read 847 files in 4 minutes. Your logs show 847 authorized requests. AgentGate saw a kill chain.
 
 [![PyPI version](https://img.shields.io/pypi/v/agentgate-pdp.svg)](https://pypi.org/project/agentgate-pdp/)
 [![npm version](https://img.shields.io/npm/v/agentgate-pdp.svg)](https://www.npmjs.com/package/agentgate-pdp)
@@ -14,7 +16,7 @@ npm install agentgate-pdp      # TypeScript / Node.js
 
 **Website:** [tryagentgate.com](https://tryagentgate.com) · **Full demo:** [youtube.com/watch?v=SJQMBv1YTwE](https://youtu.be/SJQMBv1YTwE)
 
-> ⭐ If AgentGate saves you from a rogue agent, star the repo — it helps others find it.
+> ⭐ If AgentGate is useful to you, star the repo — it helps other builders find it.
 
 ---
 
@@ -28,7 +30,21 @@ npm install agentgate-pdp      # TypeScript / Node.js
 
 ---
 
-## The attack OAuth can't see
+## The gap OAuth was never designed to fill
+
+Enterprises are deploying autonomous agents with valid credentials and no layer between those credentials and everything they can reach. OAuth answers one question: *is this identity allowed in?* It was never designed to answer what matters for an agent:
+
+> *Should this specific action, in this sequence, by this delegated agent, for this declared purpose, be allowed to execute right now?*
+
+An agent is trustworthy when three things are simultaneously true:
+
+- **Verifiable authority** — it was legitimately delegated to take this action, through a cryptographically signed chain, scope-attenuated at every hop
+- **Behavioral alignment** — the action matches why the agent was created, not just what it's technically permitted to do
+- **Provable actions** — every decision is sealed before execution, tamper-evident, independently verifiable
+
+AgentGate enforces all three. Every action. Before it executes.
+
+### What the sequence reveals
 
 Your LangGraph agent has a valid token. It reads 10 reports — each request is authorized. Then it tries to export everything. Each individual request looked clean. The kill chain only becomes visible across the sequence.
 
@@ -475,6 +491,13 @@ AGENTGATE_AUDIT_RETENTION_DAYS=90
 ---
 
 ## Why not OPA / OpenFGA / Microsoft AGT?
+
+The AI agent infrastructure stack has four layers. Each has well-funded incumbents:
+
+- **Posture & Observability** (Noma, Geordie AI) — they see what agents are doing. They cannot stop an action.
+- **Identity & Credentials** (CyberArk, Oasis) — they manage who the agent is. Not what it does with that identity.
+- **Model Security** (HiddenLayer) — protects the model from adversarial inputs. Different layer entirely.
+- **Runtime Authorization Enforcement** — should this specific action execute right now? This layer was unowned. AgentGate is it.
 
 OPA and OpenFGA answer: *"Can user X access resource Y?"* — static rules evaluated against static state. Microsoft's Agent Governance Toolkit added agent-aware policies, but evaluates each request independently — it has no memory of what the agent did 4 minutes ago.
 
