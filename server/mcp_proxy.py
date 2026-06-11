@@ -51,10 +51,16 @@ AGENTGATE_URL = os.getenv("AGENTGATE_URL", "http://localhost:8000").rstrip("/")
 AGENTGATE_API_KEY = os.getenv("AGENTGATE_API_KEY", "")
 MCP_UPSTREAM_URL = os.getenv("MCP_UPSTREAM_URL", "").rstrip("/")
 
-app = FastAPI(title="AgentGate MCP Proxy", version="1.1.0")
+app = FastAPI(title="AgentGate MCP Proxy", version="1.2.0")
 
 # Methods that require AgentGate authorization before forwarding
 _INTERCEPTED = {"tools/call", "resources/read"}
+
+# Methods that are forwarded without authorization but whose RESPONSES are
+# scanned for tool schema poisoning (SAFE-T1001 / ContextCrush).
+# tools/list is the primary attack surface: a malicious MCP server can embed
+# hidden directives in tool description fields that the agent loads into context.
+_SCHEMA_SCANNED = {"tools/list"}
 
 # Threat categories that indicate active tool poisoning — hard block.
 # A file-reader or search tool has no legitimate reason to include LLM
@@ -222,6 +228,63 @@ def _scan_tool_response(mcp_result: dict) -> tuple[dict, bool, str, list]:
     return result_copy, False, reason, categories
 
 
+def _scan_tools_list_response(result: dict) -> tuple[dict, list[dict], str]:
+    """
+    Scan a tools/list result for SAFE-T1001 tool schema poisoning (ContextCrush).
+
+    Iterates over each tool in result["tools"] and calls scan_tool_schema().
+    Poisoned tools are removed from the list returned to the agent; clean tools
+    pass through unchanged.
+
+    Returns:
+      (clean_result, poisoned_tools, summary_note)
+      - clean_result: result dict with poisoned tools stripped out
+      - poisoned_tools: list of {"name", "level", "evidence", "field"} for each hit
+      - summary_note: human-readable description of what was removed (empty if none)
+    """
+    try:
+        from core.injection_detector import scan_tool_schema
+    except ImportError:
+        return result, [], ""
+
+    tools = result.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return result, [], ""
+
+    clean_tools = []
+    poisoned: list[dict] = []
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            clean_tools.append(tool)
+            continue
+        scan = scan_tool_schema(tool)
+        if scan.level in ("poison", "suspicious"):
+            poisoned.append({
+                "name": scan.tool_name,
+                "level": scan.level,
+                "evidence": scan.evidence,
+                "field": scan.field,
+            })
+        else:
+            clean_tools.append(tool)
+
+    if not poisoned:
+        return result, [], ""
+
+    import copy
+    clean_result = copy.copy(result)
+    clean_result["tools"] = clean_tools
+
+    names = ", ".join(p["name"] for p in poisoned)
+    levels = ", ".join(p["level"] for p in poisoned)
+    summary = (
+        f"SAFE-T1001: {len(poisoned)} tool(s) removed — schema poisoning detected "
+        f"[{levels}] in: {names}"
+    )
+    return clean_result, poisoned, summary
+
+
 async def _report_to_agentgate(
     agent_id: str,
     token: str,
@@ -267,7 +330,26 @@ async def mcp_proxy(request: Request):
     method = body.get("method", "")
     req_id = body.get("id")
 
-    # Pass through non-intercepted methods immediately
+    # Schema-scanned methods: forward transparently but scan the response for
+    # SAFE-T1001 tool description poisoning before returning to the agent.
+    if method in _SCHEMA_SCANNED:
+        upstream = await _forward(body, {})
+        rpc_result = upstream.get("result")
+        if isinstance(rpc_result, dict):
+            clean_result, poisoned, summary = _scan_tools_list_response(rpc_result)
+            if poisoned:
+                agent_label = agent_id or "unknown"
+                print(
+                    f"[AgentGate MCP] SAFE-T1001 SCHEMA_POISON — agent={agent_label} "
+                    f"removed {len(poisoned)} tool(s): {[p['name'] for p in poisoned]}",
+                    flush=True,
+                )
+                response = JSONResponse({**upstream, "result": clean_result})
+                response.headers["X-AgentGate-Schema-Poison"] = summary
+                return response
+        return JSONResponse(upstream)
+
+    # Pass through all other non-intercepted methods immediately
     if method not in _INTERCEPTED:
         result = await _forward(body, {})
         return JSONResponse(result)
@@ -344,6 +426,8 @@ async def healthz():
         "agentgate_url": AGENTGATE_URL,
         "upstream_configured": bool(MCP_UPSTREAM_URL),
         "tool_poisoning_scan": "enabled",
+        "tool_schema_poison_scan": "enabled",   # SAFE-T1001 / ContextCrush
+        "schema_scanned_methods": sorted(_SCHEMA_SCANNED),
     }
 
 
