@@ -4,6 +4,85 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-12 — MCP Descriptor Guard delivered (code commit)
+
+**Branch:** `daily/2026-06-12-mcp-descriptor-guard`
+
+### What changed
+
+The 2026-06-11 log entry described the MCP Descriptor Guard design; this entry records
+the actual code commit.
+
+**New file: `core/mcp_descriptor_guard.py`**
+
+Pure-Python (stdlib only: `re`, `hashlib`, `unicodedata`) module that detects two
+attack patterns in MCP `tools/list` responses before those descriptions ever reach
+the LLM's context window:
+
+- **Descriptor Poisoning** — injection directives embedded in tool `description`
+  or `inputSchema.properties[*].description` fields. Detected on first `tools/list`
+  call via 20 keyword regex patterns with NFKC normalization to block fullwidth-character
+  and other homoglyph substitution bypasses.
+
+- **Rug-Pull / Tool Description Mutation** — tool descriptions that change after
+  initial registration. The guard tracks a SHA-256 hash of each tool's combined
+  description + schema descriptor per upstream URL. Any hash change on a subsequent
+  `tools/list` call triggers `TOOL_DESCRIPTION_MUTATION`, even if the new description
+  looks clean (mutation itself is the signal). Mutation takes precedence over descriptor
+  poisoning in the returned category.
+
+Public API: `scan_tool_descriptions(tools_list_result, upstream_url)` returns
+`(result_or_None, reason, threat_categories)`. `clear_cache(upstream_url=None)` resets
+per-upstream or all caches (useful for deliberate server re-deployments and tests).
+
+Fail-closed: any internal exception in the guard returns `(None, reason, ["GUARD_ERROR"])`
+so a guard crash never silently passes potentially poisoned descriptors to the LLM.
+
+Zero external dependencies — hot path stays at zero-latency.
+
+**Modified: `server/mcp_proxy.py`**
+
+- Added `_RESPONSE_SCANNED = {"tools/list"}` — distinct from `_INTERCEPTED`;
+  methods in this set are forwarded then scanned (rather than authorized before forwarding).
+- Added `tools/list` handler branch in `mcp_proxy()`: forwards request to upstream,
+  calls `scan_tool_descriptions()`, blocks with JSON-RPC error code `-32009` on threat
+  detection, reports asynchronously to AgentGate dashboard/audit, and **fails closed**
+  on guard exceptions (error returns a blocking response, not a pass-through).
+- Updated `/healthz` endpoint: `"descriptor_guard": "enabled"`.
+- Bumped proxy version `1.1.0 → 1.2.0`.
+
+**New file: `tests/test_mcp_descriptor_guard.py`**
+
+32 tests across 5 test classes (stdlib `unittest`, zero external dependencies):
+- `TestCleanTools` — 6 tests: legitimate tool lists pass through unmodified
+- `TestDescriptorPoisoning` — 11 tests: imperative overrides, system tags, ChatML
+  delimiters, LLAMA `[INST]` tags, exfiltration directives in both description and
+  schema fields, FULLWIDTH Unicode homoglyph bypass attempt
+- `TestRugPullDetection` — 8 tests: unchanged descriptions pass, mutations trigger block,
+  clean-to-dirty mutation is rug-pull not poisoning, multi-tool mutation, per-upstream
+  cache isolation, `clear_cache` by URL and by all, new-tool-added does not trigger
+- `TestPoisoningOnlyOnFirstSeen` — 2 tests: first call blocks on poisoned desc;
+  clean-then-poisoned is rug-pull not poisoning
+- `TestRobustness` — 5 tests: None description, missing schema descriptions, nameless
+  tool, very long description, non-list tools value
+
+### Test results
+
+```
+Ran 32 tests in 0.005s
+
+OK
+```
+
+All 32 tests pass using `python -m unittest` (stdlib only — no external dependencies,
+no network required).
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-11 — MCP Descriptor Guard (rug-pull + descriptor poisoning detection)
 
 **Branch:** `daily/2026-06-11-mcp-rugpull-detection`
