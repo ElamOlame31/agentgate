@@ -1290,6 +1290,25 @@ async def agent_baseline(request: Request, agent_id: str):
     return b
 
 
+# ── Compliance ──────────────────────────────────────────────────────────────
+
+@app.get("/compliance/owasp-agentic", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def owasp_agentic_compliance(
+    request: Request,
+    mechanisms: bool = Query(default=True, description="Include per-risk mechanism detail"),
+):
+    """
+    OWASP Top 10 for Agentic Applications 2026 compliance report.
+
+    Returns a machine-readable mapping of all 10 ASI risk categories to the
+    AgentGate components that enforce or detect each one, plus an overall
+    coverage score (FULL=1pt, PARTIAL=0.5pt, NONE=0pt out of 10).
+    """
+    from core.owasp_agentic import generate_compliance_report
+    return generate_compliance_report(include_mechanisms=mechanisms)
+
+
 # ── WebSocket ───────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
