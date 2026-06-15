@@ -4,6 +4,81 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-15 — Kill chain Detector 5: ACTION_TYPE_ESCALATION
+
+**Branch:** `daily/2026-06-15-action-type-escalation`
+
+### What changed
+
+**Modified: `core/kill_chain.py`**
+
+Added Detector 5 — `ACTION_TYPE_ESCALATION` — to `analyze_kill_chain()`.
+
+- Two module-level constants extracted for the detector:
+  - `_ALL_ESCALATION_ACTIONS: frozenset[str]` — union of `_DESTRUCTIVE_ACTIONS` and
+    `_EXFIL_ACTIONS`, computed at import time so the hot path avoids repeated set construction
+    on every `authorize` call.
+  - `ACTION_ESCALATION_MIN_HISTORY = 5` — minimum prior request count before the detector
+    fires, preventing false alarms on brand-new agents with no behavioral baseline.
+
+- Detection logic (24h window): when the current action is in `_ALL_ESCALATION_ACTIONS` AND the
+  agent has ≥ `ACTION_ESCALATION_MIN_HISTORY` prior requests in the 24h history AND none of those
+  prior requests used any escalation-type action → emit
+  `KILL_CHAIN:ACTION_TYPE_ESCALATION:{DESTROY|EXFIL}:first_use_after_N_benign_requests`.
+
+- The flag is tiered as **ESCALATE** (not hard DENY): when present with a score above threshold,
+  `make_decision()` returns `ESCALATE` instead of `PERMIT`, routing the request to human-in-the-loop
+  review. This closes a real gap: a read-purpose agent with all scores high (e.g., delete IS in its
+  authorized scope) could previously PERMIT a first-time delete at LOW sensitivity with no flags at
+  all. Detector 5 catches it.
+
+- Gap filled relative to existing detectors:
+  - `BULK_READ_THEN_*` requires ≥ 10 bulk reads; the new detector fires at ≥ 5 prior requests of
+    any type, catching low-read-count compromise paths.
+  - `READ_THEN_DELETE` (same-resource check) is per-resource; the new detector is action-class-wide.
+  - The two are non-overlapping: both can fire simultaneously on a single request (each adds its
+    flag to the audit log for richer context).
+
+- Module docstring updated to list the new flag and its tier.
+
+**Modified: `README.md`**
+
+Added one row to the "What gets blocked" table:
+- Agent that has only read/searched for hours then suddenly attempts `delete` → `ESCALATE — ACTION_TYPE_ESCALATION`
+
+**New file: `tests/test_kill_chain_action_escalation.py`**
+
+58 stdlib-only tests across 9 test classes:
+- `TestNoHistory` (3 tests) — empty history never fires
+- `TestBelowMinHistory` (3 tests) — below threshold never fires, including exactly threshold-1
+- `TestFiresAtMinHistory` (3 tests) — fires at exactly the minimum and above
+- `TestDestroyCategory` (8 tests) — all 8 destructive action words emit the DESTROY flag
+- `TestExfilCategory` (8 tests) — all 8 exfil action words emit the EXFIL flag
+- `TestBenignActionsNeverFire` (8 tests) — read, search, list, query, analyze, view, summarize, write never fire
+- `TestPriorEscalationDisarmsDetector` (5 tests) — any prior escalation action in history silences the detector
+- `TestCaseInsensitivity` (4 tests) — case-insensitive matching for both current action and history
+- `TestFlagFormat` (4 tests) — verifies exact flag string format including count suffix
+- `TestLargeHistory` (2 tests) — 100-entry history works correctly
+- `TestSQLiteBackedHistory` (5 tests) — integration tests using a real SQLite `request_history` table
+- `TestConstantConsistency` (5 tests) — verifies inline test constants match the module's definitions,
+  surfacing any future constant drift as a test failure
+
+### Test results
+
+```
+Ran 58 tests in 0.149s — OK  (test_kill_chain_action_escalation.py, stdlib only)
+Ran 14 tests in 0.137s — OK  (test_audit_wal_stdlib.py, stdlib only)
+```
+
+Full integration tests requiring `pydantic`, `fastapi`, `sentence-transformers` not available
+in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-13 — SQLite WAL mode + async audit write queue
 
 **Branch:** `daily/2026-06-13-audit-wal-write-queue`
