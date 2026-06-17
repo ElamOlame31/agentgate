@@ -4,6 +4,76 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-17 — Purpose drift detection across 24-hour audit history
+
+**Branch / PR:** `daily/2026-06-17-purpose-drift-detection` · https://github.com/ElamOlame31/agentgate-public/pull/7
+
+### What changed
+
+**New file: `core/purpose_drift.py`**
+
+Stdlib-only module (no pydantic / fastapi / sentence-transformers) that detects
+when an agent's purpose alignment scores are trending away from its declared
+intent over the session window.
+
+Every `/authorize` call already computes a `purpose_alignment_score` (stored in
+`audit_log.purpose_score`).  This module queries that column across the 24-hour
+history and runs two independent detectors:
+
+- **GRADUAL** — compares the rolling average of the newest 10 entries against
+  the oldest 30 (the baseline).  If recent avg has dropped ≥ 15 pts below
+  baseline, raises `PURPOSE_DRIFT:GRADUAL:Npts(baseline=X,recent=Y)`.
+- **SUSTAINED_LOW** — if the recent 10-entry average falls below 40 pts,
+  raises `PURPOSE_DRIFT:SUSTAINED_LOW:recent_avg=N` regardless of baseline.
+
+Both detectors are independent and can fire simultaneously.  A cold-start guard
+(`MIN_ENTRIES_FOR_DRIFT = 15`) suppresses detection until the agent has enough
+history to establish a reliable baseline.  `detect_purpose_drift()` returns `[]`
+gracefully if the table is absent or the agent has no history.
+
+**Modified: `core/trust_engine.py`**
+
+One import + one `detect_purpose_drift()` call inside `compute_trust()` (after
+`analyze_kill_chain()`).  `PURPOSE_DRIFT` flags feed the existing
+`make_decision()` flag → ESCALATE path with no new decision logic required.
+
+**New file: `tests/test_purpose_drift.py`**
+
+38 stdlib-only tests across 6 classes:
+
+- `TestGetPurposeScoreHistory` (8 tests) — empty DB, per-agent filtering, float
+  type, oldest-first order, max-age exclusion, missing-table graceful return,
+  Path/str parity, NULL exclusion.
+- `TestNoDriftDetected` (8 tests) — empty history, below min-entries, exactly at
+  min, stable, increasing trend, sub-threshold drop, floor exact value, recovery.
+- `TestGradualDrift` (6 tests) — exact threshold fires, delta in flag, baseline
+  and recent avg in flag, large drop, only recent window used, flag prefix.
+- `TestSustainedLow` (5 tests) — below floor fires, avg in flag, both flags
+  together, exactly two flags, very low fires both.
+- `TestConstants` (8 tests) — positive windows, baseline > recent, min ≥ recent,
+  gradual threshold in range, absolute threshold in range, max age = 24 h.
+- `TestAgentIsolation` (3 tests) — drifting agent does not affect stable agent,
+  unknown agent returns empty, two independently drifting agents.
+
+### Test results
+
+```
+Ran 38 tests in 0.38s — OK
+  (38 new: tests/test_purpose_drift.py, stdlib only)
+
+Ran 14 tests in 0.14s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-16 — Explicit fail-closed behavior for the authorization pipeline
 
 **Branch / PR:** `daily/2026-06-16-fail-closed-behavior` · https://github.com/ElamOlame31/agentgate-public/pull/6
