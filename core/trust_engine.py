@@ -12,6 +12,7 @@ from core.models import (
 from core.purpose_engine import compute_purpose_score
 from core import audit
 from core.kill_chain import analyze_kill_chain
+from core.purpose_drift import detect_purpose_drift
 
 # Sensitivity thresholds: minimum trust score required to PERMIT
 SENSITIVITY_THRESHOLDS = {
@@ -340,6 +341,9 @@ def compute_trust(
 
     kc_flags = analyze_kill_chain(agent.agent_id, request.action, request.resource)
     all_flags.extend(kc_flags)
+
+    drift_flags = detect_purpose_drift(agent.agent_id)
+    all_flags.extend(drift_flags)
 
     beh_score, beh_flags = score_behavioral(agent.agent_id, request.action)
     # Penalize behavioral score when a prior injection scan flagged this agent
