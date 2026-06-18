@@ -14,6 +14,8 @@ Flags are tiered:
   KILL_CHAIN:CROSS_SESSION:BULK_READ_*     hard DENY — slow APT-style bulk-read then exfil/destroy (24h)
   KILL_CHAIN:CROSS_SESSION:READ_THEN_DELETE hard DENY — read+delete same resource across sessions
   KILL_CHAIN:CROSS_SESSION:SENSITIVITY_RAMP ESCALATE — 4-hour progressive sensitivity ramp
+  KILL_CHAIN:LETHAL_TRIFECTA               hard DENY — all three arms active in session window:
+                                            external content read + sensitive data access + external comm
 """
 
 import time
@@ -46,6 +48,68 @@ _DESTRUCTIVE_ACTIONS = {
     "delete", "remove", "drop", "truncate",
     "wipe", "purge", "destroy", "overwrite",
 }
+
+# ── Lethal Trifecta arm classifiers ──────────────────────────────────────────
+# Arm 1 — External content read: the agent fetches or reads from an untrusted
+# external source. Injection attacks enter via this arm.
+_EXTERNAL_READ_ACTIONS = frozenset({
+    "fetch", "browse", "scrape", "crawl", "download", "get",
+})
+_EXTERNAL_URL_PREFIXES = ("http://", "https://", "ftp://")
+_EXTERNAL_RESOURCE_KEYWORDS = frozenset({
+    "external", "remote", "internet", "inbound", "incoming",
+})
+
+# Arm 3 — External communication: the agent can send data outside the system.
+# Shares the EXFIL action set plus write-to-external-destination heuristics.
+_EXFIL_DESTINATION_KEYWORDS = frozenset({
+    "webhook", "smtp", "email", "ftp", "s3", "outbound", "external",
+    "slack", "teams", "discord", "notify", "alert",
+})
+
+
+def _is_external_read(action: str, resource: str) -> bool:
+    """Return True if this request reads from untrusted external content (Trifecta Arm 1)."""
+    a = action.lower()
+    r = resource.lower()
+    # Exfil actions on external URLs are Arm 3 (external comm), not Arm 1 (external read).
+    # Direction matters: inbound reads create injection risk; outbound sends create exfil risk.
+    if a in _EXFIL_ACTIONS:
+        return False
+    if r.startswith(_EXTERNAL_URL_PREFIXES):
+        return True
+    if a in _EXTERNAL_READ_ACTIONS:
+        return True
+    if a in {"read", "get"} and any(kw in r for kw in _EXTERNAL_RESOURCE_KEYWORDS):
+        return True
+    return False
+
+
+def _is_sensitive_access(action: str, resource: str) -> bool:
+    """Return True if this request accesses HIGH or CRITICAL sensitivity data (Trifecta Arm 2).
+
+    Uses resource-only classification (not action-type) to prevent double-counting with
+    Arm 3 (external comm). An exfil action like `export /dump.zip` is Arm 3; we only
+    count it as Arm 2 if the resource itself contains sensitive data keywords.
+    """
+    r = resource.lower()
+    from core.trust_engine import _CRITICAL_KEYWORDS, _HIGH_KEYWORDS
+    if any(kw in r for kw in _CRITICAL_KEYWORDS):
+        return True
+    if any(kw in r for kw in _HIGH_KEYWORDS):
+        return True
+    return False
+
+
+def _is_external_comm(action: str, resource: str) -> bool:
+    """Return True if this request communicates data externally (Trifecta Arm 3)."""
+    a = action.lower()
+    r = resource.lower()
+    if a in _EXFIL_ACTIONS:
+        return True
+    if any(kw in r for kw in _EXFIL_DESTINATION_KEYWORDS):
+        return True
+    return False
 
 
 def _normalize_path(resource: str) -> str:
@@ -156,5 +220,43 @@ def analyze_kill_chain(agent_id: str, action: str, resource: str) -> list[str]:
     prefixes.add(_top_prefix(resource))
     if len(prefixes) >= SWEEP_PREFIX_THRESHOLD:
         flags.append(f"KILL_CHAIN:DIRECTORY_SWEEP:{len(prefixes)}_prefixes")
+
+    # ── Detector 5: Lethal Trifecta ───────────────────────────────────────────
+    # The three arms that together create a data exfiltration pipeline via
+    # indirect prompt injection (named by Simon Willison, June 2025; Sophos 2026):
+    #   Arm 1 — reads untrusted external content (fetch, browse, web URL)
+    #   Arm 2 — accesses sensitive internal data (HIGH or CRITICAL sensitivity)
+    #   Arm 3 — communicates externally (exfil actions, webhooks, email, etc.)
+    #
+    # One poisoned external input + sensitive data access + external channel =
+    # automatic exfiltration pipeline. Each arm alone is harmless; all three
+    # together within the 24-hour window are a hard DENY regardless of trust score.
+    #
+    # 24-hour window: trifecta can be assembled slowly across a session (each step
+    # individually innocuous) just like a slow APT. Fast window (5-min) is already
+    # covered by BULK_READ_THEN_EXFIL; this catches the methodical variant.
+    cur_ext_read = _is_external_read(action, resource)
+    cur_sensitive = _is_sensitive_access(action, resource)
+    cur_ext_comm = _is_external_comm(action, resource)
+
+    hist_ext_read = cur_ext_read or any(
+        _is_external_read(h["action"], h["resource"]) for h in history
+    )
+    hist_sensitive = cur_sensitive or any(
+        _is_sensitive_access(h["action"], h["resource"]) for h in history
+    )
+    hist_ext_comm = cur_ext_comm or any(
+        _is_external_comm(h["action"], h["resource"]) for h in history
+    )
+
+    if hist_ext_read and hist_sensitive and hist_ext_comm:
+        # Only fire if the CURRENT action is the dangerous arm that completes the circuit:
+        # exfiltrating after reading external content + accessing sensitive data is the
+        # canonical pipeline. We also fire when a sensitive access occurs after external
+        # content has already been read and an exfil channel is present — the attack may
+        # route the exfil in a future request, but the intent is already visible.
+        if cur_ext_comm or cur_sensitive:
+            arms = "EXT_READ+SENSITIVE_ACCESS+EXT_COMM"
+            flags.append(f"KILL_CHAIN:LETHAL_TRIFECTA:{arms}")
 
     return flags

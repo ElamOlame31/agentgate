@@ -388,6 +388,11 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     if any("READ_THEN_DELETE" in f for f in flags):
         return Decision.DENY
 
+    # Hard deny when all three lethal trifecta arms are active — external content read
+    # + sensitive data access + external communication form an automatic exfil pipeline
+    if any("LETHAL_TRIFECTA" in f for f in flags):
+        return Decision.DENY
+
     # Hard deny on behavioral contract violations — agent exceeded its own declared limits
     if any(f.startswith("CONTRACT_") for f in flags):
         return Decision.DENY
