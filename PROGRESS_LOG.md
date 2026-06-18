@@ -6,7 +6,7 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ## 2026-06-18 — Lethal Trifecta kill chain detector (Detector 5)
 
-**Branch / PR:** `daily/2026-06-18-lethal-trifecta-detector` · (PR link pending push)
+**Branch / PR:** `daily/2026-06-18-lethal-trifecta-detector` · https://github.com/ElamOlame31/agentgate-public/pull/8
 
 ### What changed
 
