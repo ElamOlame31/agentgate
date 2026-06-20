@@ -77,7 +77,7 @@ from core.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
     ContentScanRequest, ContentScanResponse, OutputSanitizeRequest,
 )
-from core import audit, trust_engine
+from core import audit, trust_engine, latency as _latency
 from core.audit import hash_token
 from core.token import (
     issue_agent_token, verify_agent_jwt, get_public_key_pem,
@@ -259,6 +259,23 @@ async def healthz():
         "alerts": alert_status(),
         "siem": siem_status() or "not configured",
     }
+
+
+@app.get("/metrics", dependencies=[Depends(require_api_key)])
+async def get_metrics():
+    """
+    Live latency percentiles (p50/p95/p99) per authorization pipeline stage.
+
+    Metrics are computed from the last 1 000 observations per component and
+    reset on server restart (in-memory only — nothing written to disk).
+
+    Components:
+      total        — end-to-end /authorize latency (ms)
+      trust        — 4-D trust scoring (SQLite queries + scoring)
+      policy       — NL policy hard-block check
+      audit_write  — audit log enqueue
+    """
+    return {"latency_ms": _latency.all_stats()}
 
 
 # ── Agent Registration ──────────────────────────────────────────────────────
@@ -605,6 +622,7 @@ def _normalize_resource(resource: str) -> str:
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("200/minute")
 async def authorize(request: Request, body: AuthorizationRequest):
+    _t_authorize_start = time.monotonic()
     # Always generate server-side — client-supplied IDs would allow audit log
     # manipulation and replay attacks via predictable or colliding request IDs.
     body.request_id = str(uuid.uuid4())
@@ -689,7 +707,8 @@ async def authorize(request: Request, body: AuthorizationRequest):
         return response
 
     # ── Policy check FIRST (hard rules override trust score) ──────────────
-    policy_match = check_policies(body.agent_id, body.action, body.resource)
+    with _latency.measure("policy"):
+        policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
         response = _build_policy_blocked_response(body, agent, policy_match)
         audit.log_decision_queued(response)
@@ -777,10 +796,11 @@ async def authorize(request: Request, body: AuthorizationRequest):
     contagion_penalty, contagion_flags = _contagion.get_contagion_penalty(body.agent_id)
 
     # compute_trust calls SQLite (request history, baselines) — run in thread pool
-    breakdown, flags = await asyncio.to_thread(
-        trust_engine.compute_trust, agent, body, _agents, injection_risk,
-        contagion_penalty, contagion_flags,
-    )
+    with _latency.measure("trust"):
+        breakdown, flags = await asyncio.to_thread(
+            trust_engine.compute_trust, agent, body, _agents, injection_risk,
+            contagion_penalty, contagion_flags,
+        )
     decision = trust_engine.make_decision(breakdown, flags)
     explanation = generate_explanation(
         agent.name, body.action, body.resource,
@@ -872,7 +892,8 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 0,
             )
 
-    audit.log_decision_queued(response)
+    with _latency.measure("audit_write"):
+        audit.log_decision_queued(response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})
     fire_alert(
         decision.value, body.agent_id,
@@ -888,6 +909,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
         breakdown=breakdown.model_dump(),
         request_id=body.request_id,
     )
+    _latency.record("total", (time.monotonic() - _t_authorize_start) * 1000.0)
     return response
 
 

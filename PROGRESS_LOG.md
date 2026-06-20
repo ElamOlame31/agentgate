@@ -4,6 +4,103 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-20 — Pipeline latency tracking and `/metrics` endpoint
+
+**Branch / PR:** `daily/2026-06-20-latency-metrics` · (PR link to follow)
+
+### What changed
+
+**New file: `core/latency.py`**
+
+Stdlib-only module (`math`, `threading`, `time`, `collections.deque`) that tracks
+per-stage authorization latency in a bounded rolling window.
+
+- `record(component, duration_ms)` — appends one observation; auto-evicts oldest
+  when the window is full.
+- `measure(component)` — context manager that times the enclosed block and calls
+  `record()` in the `finally` clause (records even on exception).
+- `get_stats(component)` — returns `p50_ms`, `p95_ms`, `p99_ms`, `mean_ms`,
+  `max_ms`, `count` computed via the nearest-rank percentile method on a
+  snapshot copy of the deque.
+- `all_stats()` — stats for all components, alphabetically sorted.
+- `component_names()` — names of components with at least one observation.
+- `reset()` — clears all data; intended for tests and server restart.
+- `MAX_SAMPLES = 1000` — bounded window cap; each component holds at most
+  1 000 observations (≈8 KB of floats); oldest are evicted automatically.
+- Thread-safe: one `threading.Lock` guards all bucket operations.
+
+**Modified: `server/main.py`**
+
+Four instrumentation points added to the `/authorize` handler:
+
+1. `_t_authorize_start = time.monotonic()` — recorded before any handler logic.
+2. `with _latency.measure("policy"):` — wraps the NL policy hard-block check.
+3. `with _latency.measure("trust"):` — wraps the `compute_trust()` call
+   (SQLite history queries + 4-D scoring).
+4. `with _latency.measure("audit_write"):` — wraps `audit.log_decision_queued()`.
+5. `_latency.record("total", ...)` — end-to-end latency recorded after SIEM
+   dispatch, immediately before `return response`.
+
+**New endpoint: `GET /metrics`**
+
+Requires API key. Returns live p50/p95/p99 breakdowns for every tracked
+pipeline stage since the last server restart:
+
+```json
+{
+  "latency_ms": [
+    {"component": "audit_write", "count": 412, "p50_ms": 0.04, "p95_ms": 0.12, "p99_ms": 0.21, "mean_ms": 0.05, "max_ms": 0.31},
+    {"component": "policy",      "count": 412, "p50_ms": 0.18, "p95_ms": 0.45, "p99_ms": 0.82, "mean_ms": 0.20, "max_ms": 1.14},
+    {"component": "total",       "count": 412, "p50_ms": 4.21, "p95_ms": 9.87, "p99_ms": 14.3, "mean_ms": 4.50, "max_ms": 22.1},
+    {"component": "trust",       "count": 412, "p50_ms": 3.80, "p95_ms": 9.10, "p99_ms": 13.6, "mean_ms": 4.05, "max_ms": 21.4}
+  ]
+}
+```
+
+**New file: `tests/test_latency_stdlib.py`**
+
+39 stdlib-only tests across 8 classes:
+
+- `TestEmptyState` (5 tests) — zero-count response, all percentiles zero,
+  component name preserved, empty all_stats and component_names.
+- `TestSingleObservation` (6 tests) — all percentiles equal the single value,
+  mean and max correct.
+- `TestKnownPercentiles` (7 tests) — exact percentile verification against
+  arithmetic sequences: p50 on 10 values, p95 and p99 on 100 values, mean,
+  max, two-value p50, count.
+- `TestBoundedWindow` (3 tests) — count capped at MAX_SAMPLES after overflow,
+  oldest entries evicted, MAX_SAMPLES is a positive integer.
+- `TestMultipleComponents` (5 tests) — components are independent, all_stats
+  returns all, alphabetical sort of all_stats, component_names excludes
+  unrecorded, component_names sorted.
+- `TestReset` (2 tests) — clears all data, allows fresh recording.
+- `TestContextManager` (4 tests) — records nonzero duration, reasonable timing
+  for sleep(10ms), records even when block raises, component name preserved.
+- `TestThreadSafety` (2 tests) — 20 threads × 50 records each, no corruption
+  across 10 concurrent components.
+- `TestConstants` (2 tests) — MAX_SAMPLES bounds.
+- `TestPercentileEdgeCases` (3 tests) — all-same values, two-value p99,
+  three-decimal rounding.
+
+### Test results
+
+```
+Ran 39 tests in 0.019s — OK
+  (39 new: tests/test_latency_stdlib.py, stdlib only)
+
+Ran 14 tests in 0.134s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-17 — Purpose drift detection across 24-hour audit history
 
 **Branch / PR:** `daily/2026-06-17-purpose-drift-detection` · https://github.com/ElamOlame31/agentgate-public/pull/7
