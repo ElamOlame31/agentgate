@@ -98,6 +98,7 @@ from core import approvals
 from core import quarantine as _quarantine
 from core import contagion as _contagion
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
+from core import response_signing as _response_signing
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -106,6 +107,18 @@ _agents: dict[str, AgentRegistration] = {}
 # { agent_id: { "score": float, "level": str, "ts": float } }
 _recent_scans: dict[str, dict] = {}
 _SCAN_TTL = 120.0  # seconds before a scan result expires
+
+
+def _stamp_response(response: AuthorizationResponse) -> None:
+    """Add a response MAC nonce+sig in-place. Called before every /authorize return."""
+    nonce, sig = _response_signing.sign_response(
+        response.request_id,
+        response.agent_id,
+        response.decision.value,
+        response.timestamp,
+    )
+    response.response_nonce = nonce
+    response.response_sig = sig
 
 
 _MAX_WS_CONNECTIONS = 100
@@ -425,6 +438,18 @@ async def public_key():
     return {"public_key_pem": get_public_key_pem(), "algorithm": "EdDSA"}
 
 
+@app.get("/signing-info", dependencies=[Depends(require_api_key)])
+async def signing_info():
+    """
+    Return metadata about the authorization response MAC scheme.
+
+    Clients use this to confirm which key_id is active (useful after key rotation)
+    and to understand the canonical field order for verify_response() calls.
+    No secret material is included — key_id is a short fingerprint only.
+    """
+    return _response_signing.get_signing_info()
+
+
 @app.post("/agents/{agent_id}/revoke", dependencies=[Depends(require_api_key)])
 @limiter.limit("20/minute")
 async def revoke_agent(request: Request, agent_id: str):
@@ -621,6 +646,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Unknown agent → deny immediately
     if body.agent_id not in _agents:
         response = _build_unknown_agent_response(body)
+        _stamp_response(response)
         audit.log_decision_queued(response, False)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         return response
@@ -680,6 +706,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             ),
             attack_flags=["QUARANTINED", f"QUARANTINE_TRIGGER:{q_record.trigger}"],
         )
+        _stamp_response(response)
         audit.log_decision_queued(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
@@ -692,6 +719,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
         response = _build_policy_blocked_response(body, agent, policy_match)
+        _stamp_response(response)
         audit.log_decision_queued(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
@@ -752,6 +780,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 attack_flags=["INJECTION_DETECTED", f"INJECTION_CONFIDENCE:{round(scan_result.confidence * 100)}%"],
                 injection_score=scan_result.confidence,
             )
+            _stamp_response(response)
             audit.log_decision_queued(response)
             await manager.broadcast({"type": "decision", "data": response.model_dump()})
             fire_alert(
@@ -814,6 +843,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             attack_flags=flags,
             injection_score=injection_risk if injection_risk > 0 else None,
         )
+        _stamp_response(response)
         audit.log_decision_queued(response)
         return response
 
@@ -828,6 +858,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
         attack_flags=flags,
         injection_score=injection_risk if injection_risk > 0 else None,
     )
+    _stamp_response(response)
 
     # ── Quarantine triggers ────────────────────────────────────────────────
     if decision == Decision.DENY:

@@ -100,3 +100,8 @@ class AuthorizationResponse(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     attack_flags: List[str] = []
     injection_score: Optional[float] = None  # set when a prior /scan result exists for this agent
+    # NSA-aligned response MAC (HMAC-SHA256 + nonce).
+    # SDK clients can call core.response_signing.verify_response() to confirm
+    # the response originated from this instance and has not been replayed.
+    response_nonce: Optional[str] = None
+    response_sig: Optional[str] = None
