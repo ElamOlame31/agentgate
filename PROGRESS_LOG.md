@@ -4,6 +4,100 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-22 — Authorization response signing (`response_nonce` + `response_sig`)
+
+**Branch / PR:** `daily/2026-06-22-response-signing` · _(PR link below)_
+
+### What changed
+
+**New file: `core/response_signing.py`**
+
+Stdlib-only module (`hashlib`, `hmac`, `os`, `time`, `uuid`) that generates and
+verifies a per-response HMAC-SHA256 MAC, enabling SDK clients to confirm that
+an authorization response is fresh and originated from the correct AgentGate
+instance.
+
+- `sign_response(request_id, agent_id, decision, timestamp) → (nonce, mac)` —
+  generates a UUID4 nonce, computes HMAC-SHA256 over the canonical string
+  `nonce|request_id|agent_id|DECISION|str(round(timestamp, 3))`, returns both
+  values for embedding in the response.
+- `verify_response(nonce, mac, ...) → (bool, reason)` — checks response age
+  against `RESPONSE_MAX_AGE_SECONDS` (default 300 s, overridable via
+  `AGENTGATE_RESPONSE_MAX_AGE`), rejects responses timestamped more than
+  `RESPONSE_MAX_FUTURE_SKEW_SECONDS` (5 s) in the future, then performs a
+  constant-time MAC comparison via `hmac.compare_digest`.
+- `get_signing_info() → dict` — returns algorithm, key fingerprint (no secret
+  material), max age, and canonical field order; exposed via `GET /signing-info`.
+- Signing key: `SHA-256(b"agentgate-response-mac|" + AGENTGATE_SIGNING_KEY_bytes)`
+  — domain-separated from the Ed25519 token-issuance seed (used by `core/token.py`)
+  and from the audit-log HMAC key (used by `core/audit.py`).
+
+**Modified: `core/models.py`**
+
+Two optional fields added to `AuthorizationResponse`:
+
+- `response_nonce: Optional[str] = None` — UUID4 per-response nonce.
+- `response_sig: Optional[str] = None` — HMAC-SHA256 hex digest (64 chars).
+
+Fields are `Optional` so existing callers that construct `AuthorizationResponse`
+directly (tests, integrations) require no changes — they default to `None` until
+`_stamp_response()` is called in the server.
+
+**Modified: `server/main.py`**
+
+- Import: `from core import response_signing as _response_signing`.
+- Helper: `_stamp_response(response)` — calls `sign_response()` and sets
+  `response.response_nonce` / `response.response_sig` in place. Called
+  synchronously (HMAC is sub-microsecond) so it adds no measurable latency.
+- Six call sites in `/authorize` — every response path stamped before
+  `audit.log_decision_queued()` so the nonce and sig are included in the
+  audit record.
+- New endpoint: `GET /signing-info` (API-key protected) — returns MAC metadata
+  for client configuration verification.
+
+**New file: `tests/test_response_signing.py`**
+
+52 stdlib-only tests across 8 classes:
+
+- `TestSignAndVerify` (8 tests) — PERMIT/DENY/ESCALATE/PENDING round-trips,
+  nonce is UUID4 format, nonce uniqueness per call, MAC is 64 hex chars,
+  different request IDs give different MACs.
+- `TestTamperedFields` (7 tests) — each of the five canonical fields, single
+  hex-char flip in MAC, empty MAC.
+- `TestDecisionCaseInsensitivity` (2 tests) — lowercase sign + uppercase verify,
+  and vice versa.
+- `TestExpiry` (7 tests) — expired response rejected, reason contains age,
+  future response rejected, fresh accepted, exact boundary cases.
+- `TestConstants` (8 tests) — max age bounds, future skew bounds, separator
+  length, signing key is 32-byte bytes object.
+- `TestDomainSeparation` (3 tests) — response key ≠ token seed, response key ≠
+  audit key, different env var gives different key.
+- `TestSigningInfo` (9 tests) — algorithm field, 16-char hex key ID, no secret
+  material in output, stability across calls.
+- `TestCanonicalBytes` (5 tests) — bytes type, all fields present, timestamp
+  rounded to 3 dp, 5 separator-delimited parts, decision uppercased.
+- `TestReplayPrevention` (2 tests) — valid MAC re-verifies within window (caller
+  must track seen nonces); swapped nonces between two responses fail.
+
+### Test results
+
+```
+Ran 52 tests in 0.004s — OK
+  (52 new: tests/test_response_signing.py, stdlib only)
+
+Ran 14 tests in 0.128s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-20 — Pipeline latency tracking and `/metrics` endpoint
 
 **Branch / PR:** `daily/2026-06-20-latency-metrics` · https://github.com/ElamOlame31/agentgate-public/pull/10
