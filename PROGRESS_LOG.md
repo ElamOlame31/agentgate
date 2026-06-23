@@ -4,6 +4,71 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-23 — Lateral movement detection: credential harvest + namespace sweep
+
+**Branch / PR:** `daily/2026-06-23-lateral-movement-detection` · https://github.com/ElamOlame31/agentgate-public/pull/13
+
+### What changed
+
+**New file: `core/lateral_movement.py`**
+
+Stdlib-only module (posixpath, time, urllib.parse) implementing two new kill chain
+detectors via a single pure function `detect_lateral_movement(action, resource, history)`.
+
+**Detector 5 — `KILL_CHAIN:CREDENTIAL_HARVEST` (ESCALATE)**
+
+Fires when an agent accesses **3+ distinct credential/secret resource paths** within
+the 5-minute fast window. Resource paths are matched against a 26-keyword set covering
+passwords, API keys, TLS certificates, `.env` files, vault paths, salary/payroll, and
+JWT/session secrets.
+
+Distinct from `KILL_CHAIN:BULK_READ_THEN_EXFIL` (which requires the export action):
+this fires at the enumeration phase, before the agent acts on what it found.
+
+**Detector 6 — `KILL_CHAIN:CROSS_SESSION:NAMESPACE_SWEEP` (ESCALATE)**
+
+Fires when an agent accesses **4+ distinct top-level organizational namespaces** with
+**3+ resources each** over the 24-hour window. Detects APT-style slow lateral movement
+that deliberately stays below the burst-based `DIRECTORY_SWEEP` (5-min) threshold.
+
+Both are ESCALATE signals (not hard DENYs) — broad-scope agents doing legitimate
+cross-department work warrant human-in-the-loop review rather than an automatic block.
+
+**Modified: `core/kill_chain.py`**
+
+Added `from core.lateral_movement import detect_lateral_movement` import and a single
+`flags.extend(detect_lateral_movement(action, resource, history))` call at the end of
+`analyze_kill_chain()`, wiring both detectors in as Detectors 5 & 6.
+
+**New file: `tests/test_lateral_movement.py`**
+
+73 stdlib-only tests across 11 test classes:
+
+- `TestNormalizePath` (7), `TestTopPrefix` (6), `TestIsCredentialPath` (12)
+- `TestCredentialHarvestNoDetection` (5), `TestCredentialHarvestDetected` (7)
+- `TestNamespaceSweepNoDetection` (5), `TestNamespaceSweepDetected` (8)
+- `TestBothDetectorsSimultaneous` (2), `TestEdgeCases` (8)
+- `TestConstants` (11), `TestAgentIsolation` (2)
+
+### Test results
+
+```
+Ran 73 tests in 0.007s — OK
+  (73 new: tests/test_lateral_movement.py, stdlib only)
+
+Ran 14 tests in 0.149s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-22 — Authorization response signing (`response_nonce` + `response_sig`)
 
 **Branch / PR:** `daily/2026-06-22-response-signing` · _(PR link below)_
