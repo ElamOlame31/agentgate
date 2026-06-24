@@ -713,7 +713,12 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # ── Inline injection scan (when content is passed with the request) ────────
     # Agents with processes_external_content=True can submit the document/tool
     # output directly in the authorization request — no separate /scan call needed.
-    if agent.processes_external_content and body.content:
+    # Also auto-fires when the resource is a known external content source
+    # (GitHub PRs, Jira tickets, Slack messages, webhooks, etc.) even without
+    # the explicit flag — indirect prompt injection via trusted channels is an
+    # active attack vector that requires no opt-in to detect.
+    from core.external_content_classifier import is_external_content_source as _is_ext_src
+    if body.content and (agent.processes_external_content or _is_ext_src(body.resource)):
         from core.injection_detector import scan_content as _scan_content
         scan_result = await asyncio.to_thread(_scan_content, body.content, agent.declared_purpose)
         _recent_scans[body.agent_id] = {
