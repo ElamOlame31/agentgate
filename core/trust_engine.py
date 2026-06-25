@@ -388,6 +388,11 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     if any("READ_THEN_DELETE" in f for f in flags):
         return Decision.DENY
 
+    # Hard deny when resource hammering exceeds the extreme-frequency threshold.
+    # The soft threshold (ESCALATE) falls through to the score-based path below.
+    if any("RESOURCE_HAMMERING:HARD" in f for f in flags):
+        return Decision.DENY
+
     # Hard deny on behavioral contract violations — agent exceeded its own declared limits
     if any(f.startswith("CONTRACT_") for f in flags):
         return Decision.DENY

@@ -4,6 +4,113 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-25 — Resource hammering detector (kill chain Detector 5)
+
+**Branch / PR:** `daily/2026-06-25-resource-hammering-detector` · _(PR link below)_
+
+### What changed
+
+**New file: `core/resource_hammering.py`**
+
+Stdlib-only module (posixpath, time, urllib.parse) implementing a new kill chain
+detector via `detect_resource_hammering(action, resource, history)`.
+
+**Detector 5 — `KILL_CHAIN:RESOURCE_HAMMERING` (ESCALATE / hard DENY)**
+
+Fires when an agent accesses the **same specific resource path** repeatedly within
+the 5-minute fast window. Two tiers:
+
+- **Soft (ESCALATE)**: total accesses ≥ `HAMMERING_ESCALATE_THRESHOLD` (8).
+  Covers broken agent retry loops and slow-polling exfil that stays below
+  RPM velocity thresholds. Returns `KILL_CHAIN:RESOURCE_HAMMERING:{N}_in_5min:{resource}`.
+- **Hard (DENY)**: total accesses ≥ `HAMMERING_DENY_THRESHOLD` (20).
+  At this frequency the pattern is anomalous regardless of context.
+  Returns `KILL_CHAIN:RESOURCE_HAMMERING:HARD:{N}_in_5min:{resource}`.
+
+Distinct from existing detectors:
+- `KILL_CHAIN:BULK_READ_THEN_EXFIL` — breadth (many distinct resources) before exfil action
+- `KILL_CHAIN:DIRECTORY_SWEEP` — breadth across many top-level prefixes
+- `REPETITIVE_ACTION` in trust_engine — same action type, not same resource path
+
+This detector catches depth: a single resource hammered repeatedly. The current
+(not-yet-executed) request is counted in the total (+1 to prior history count).
+Path normalization: URL-decode + POSIX-normalize + lowercase prevents bypass via
+percent-encoding (`%2F`) or case variation.
+
+**Modified: `core/kill_chain.py`**
+
+- Updated module docstring to include Detector 5 flag entries.
+- Added Detector 5 block at end of `analyze_kill_chain()`:
+  `from core.resource_hammering import detect_resource_hammering` +
+  `flags.extend(detect_resource_hammering(action, resource, history))`.
+
+**Modified: `core/trust_engine.py`**
+
+Added hard DENY check in `make_decision()`:
+```python
+if any("RESOURCE_HAMMERING:HARD" in f for f in flags):
+    return Decision.DENY
+```
+The soft threshold (ESCALATE) falls through to the existing score-based path —
+if the agent's trust score is below the resource sensitivity threshold it becomes
+DENY naturally; if above, it becomes ESCALATE for human review.
+
+**Modified: `core/quarantine.py`**
+
+Added `"KILL_CHAIN:RESOURCE_HAMMERING:HARD"` to `HARD_QUARANTINE_FLAGS`. Agents
+triggering the hard threshold are quarantined immediately (15-min auto-expiring
+window), consistent with the treatment of `CRITICAL_VELOCITY` and
+`KILL_CHAIN:BULK_READ_THEN_EXFIL`.
+
+**New file: `tests/test_resource_hammering.py`**
+
+83 stdlib-only tests across 10 test classes:
+
+- `TestNormalize` (10) — simple path, uppercase, percent-encoded, space-encoded,
+  trailing slash, `..` normalization, double slash, mixed case + encoding, root, no leading slash
+- `TestBelowThreshold` (8) — empty history, 1 prior, 5 prior, 6 prior, all different
+  resources, all outside window, mixed resources each below threshold, mixed old+new
+- `TestEscalateLevel` (8) — exact threshold, one above, contains resource, contains count,
+  contains window label, starts with `KILL_CHAIN:`, mid-range, just below deny
+- `TestDenyLevel` (7) — exact deny threshold, one above, prefix check, contains resource,
+  contains count, extreme count, contains window label
+- `TestWindowFiltering` (8) — in-window count, outside-window excluded, mixed partial,
+  mixed reaches escalate, well within window, deny level in window, deny blocked by window,
+  zero-second entry counted
+- `TestResourceIsolation` (6) — different resource not counted, case-insensitive match,
+  encoded vs decoded match, prefix-match not applied, similar-but-distinct paths, two
+  independent hammered resources
+- `TestActionVariance` (4) — all reads, all writes, mixed actions, current action type irrelevant
+- `TestReturnType` (6) — list on clean, list on escalate, list on deny, never None,
+  at most one flag, all strings
+- `TestFlagFormat` (6) — escalate prefix, deny prefix, count accuracy (escalate),
+  count accuracy (deny), original resource preserved, `_in_5min:` separator
+- `TestConstants` (8) — positive integers, deny > escalate, window positive, reasonable
+  ranges, matches 5 minutes, deny ≥ 2× escalate
+- `TestCurrentRequestCounted` (4) — prior+1 at escalate threshold, one short no flag,
+  prior+1 at deny threshold, one short of deny
+- `TestEdgeCases` (8) — encoded slash, root resource, very long path, resource with spaces,
+  missing resource key, empty string resource, 5000-entry performance, zero history adds one
+
+### Test results
+
+```
+Ran 83 tests in 0.008s — OK
+  (83 new: tests/test_resource_hammering.py, stdlib only)
+
+Ran 14 tests in 0.161s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-24 — External content source classifier for indirect prompt injection detection
 
 **Branch / PR:** `daily/2026-06-24-external-content-classifier` · https://github.com/ElamOlame31/agentgate-public/pull/14

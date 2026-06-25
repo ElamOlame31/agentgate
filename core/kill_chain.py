@@ -14,6 +14,8 @@ Flags are tiered:
   KILL_CHAIN:CROSS_SESSION:BULK_READ_*     hard DENY — slow APT-style bulk-read then exfil/destroy (24h)
   KILL_CHAIN:CROSS_SESSION:READ_THEN_DELETE hard DENY — read+delete same resource across sessions
   KILL_CHAIN:CROSS_SESSION:SENSITIVITY_RAMP ESCALATE — 4-hour progressive sensitivity ramp
+  KILL_CHAIN:RESOURCE_HAMMERING            ESCALATE  — repeated access to the same resource (5-min)
+  KILL_CHAIN:RESOURCE_HAMMERING:HARD       hard DENY — extreme repeat access to the same resource (5-min)
 """
 
 import time
@@ -156,5 +158,11 @@ def analyze_kill_chain(agent_id: str, action: str, resource: str) -> list[str]:
     prefixes.add(_top_prefix(resource))
     if len(prefixes) >= SWEEP_PREFIX_THRESHOLD:
         flags.append(f"KILL_CHAIN:DIRECTORY_SWEEP:{len(prefixes)}_prefixes")
+
+    # ── Detector 5: Resource hammering ───────────────────────────────────────
+    # Catches depth attacks: pathological focus on a single resource path.
+    # Complements Detector 4 (breadth) and Detector 1 (bulk reads before exfil).
+    from core.resource_hammering import detect_resource_hammering
+    flags.extend(detect_resource_hammering(action, resource, history))
 
     return flags
