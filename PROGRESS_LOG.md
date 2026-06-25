@@ -4,6 +4,92 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-25 — Resource hammering detector (kill chain Detector 5)
+
+**Branch / PR:** `daily/2026-06-25-resource-hammering-detector` · https://github.com/ElamOlame31/agentgate-public/pull/15
+
+### What changed
+
+**New file: `core/resource_hammering.py`**
+
+Stdlib-only module (posixpath, time, urllib.parse) implementing a new kill chain
+detector via `detect_resource_hammering(action, resource, history)`.
+
+**Detector 5 — `KILL_CHAIN:RESOURCE_HAMMERING` (ESCALATE / hard DENY)**
+
+Fires when an agent accesses the **same specific resource path** repeatedly within
+the 5-minute fast window. Two tiers:
+
+- **Soft (ESCALATE)**: total accesses ≥ `HAMMERING_ESCALATE_THRESHOLD` (8).
+  Covers broken agent retry loops and slow-polling exfil that stays below
+  RPM velocity thresholds. Returns `KILL_CHAIN:RESOURCE_HAMMERING:{N}_in_5min:{resource}`.
+- **Hard (DENY)**: total accesses ≥ `HAMMERING_DENY_THRESHOLD` (20).
+  At this frequency the pattern is anomalous regardless of context.
+  Returns `KILL_CHAIN:RESOURCE_HAMMERING:HARD:{N}_in_5min:{resource}`.
+
+Distinct from existing detectors:
+- `KILL_CHAIN:BULK_READ_THEN_EXFIL` — breadth (many distinct resources) before exfil action
+- `KILL_CHAIN:DIRECTORY_SWEEP` — breadth across many top-level prefixes
+- `REPETITIVE_ACTION` in trust_engine — same action type, not same resource path
+
+This detector catches depth: a single resource hammered repeatedly. The current
+(not-yet-executed) request is counted in the total (+1 to prior history count).
+Path normalization: URL-decode + POSIX-normalize + lowercase prevents bypass via
+percent-encoding (`%2F`) or case variation.
+
+**Modified: `core/kill_chain.py`**
+
+- Updated module docstring to include Detector 5 flag entries.
+- Added Detector 5 block at end of `analyze_kill_chain()`:
+  `from core.resource_hammering import detect_resource_hammering` +
+  `flags.extend(detect_resource_hammering(action, resource, history))`.
+
+**Modified: `core/trust_engine.py`**
+
+Added hard DENY check in `make_decision()`:
+```python
+if any("RESOURCE_HAMMERING:HARD" in f for f in flags):
+    return Decision.DENY
+```
+The soft threshold (ESCALATE) falls through to the existing score-based path —
+if the agent's trust score is below the resource sensitivity threshold it becomes
+DENY naturally; if above, it becomes ESCALATE for human review.
+
+**Modified: `core/quarantine.py`**
+
+Added `"KILL_CHAIN:RESOURCE_HAMMERING:HARD"` to `HARD_QUARANTINE_FLAGS`. Agents
+triggering the hard threshold are quarantined immediately (15-min auto-expiring
+window), consistent with the treatment of `CRITICAL_VELOCITY` and
+`KILL_CHAIN:BULK_READ_THEN_EXFIL`.
+
+**New file: `tests/test_resource_hammering.py`**
+
+83 stdlib-only tests across 10 test classes:
+
+- `TestNormalize` (10), `TestBelowThreshold` (8), `TestEscalateLevel` (8)
+- `TestDenyLevel` (7), `TestWindowFiltering` (8), `TestResourceIsolation` (6)
+- `TestActionVariance` (4), `TestReturnType` (6), `TestFlagFormat` (6)
+- `TestConstants` (8), `TestCurrentRequestCounted` (4), `TestEdgeCases` (8)
+
+### Test results
+
+```
+Ran 83 tests in 0.008s — OK
+  (83 new: tests/test_resource_hammering.py, stdlib only)
+
+Ran 14 tests in 0.161s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-24 — External content source classifier for indirect prompt injection detection
 
 **Branch / PR:** `daily/2026-06-24-external-content-classifier` · https://github.com/ElamOlame31/agentgate-public/pull/14
