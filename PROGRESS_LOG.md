@@ -4,6 +4,80 @@ Neutral engineering changelog — what changed, test results, branch/PR links.
 
 ---
 
+## 2026-06-26 — Time-of-day behavioral anomaly detector
+
+**Branch / PR:** `daily/2026-06-26-time-of-day-anomaly-detector` · https://github.com/ElamOlame31/agentgate-public/pull/16
+
+### What changed
+
+**New file: `core/time_anomaly.py`**
+
+Stdlib-only module (datetime, time) implementing a temporal behavioral
+profiler via `detect_time_anomaly(history, current_timestamp=None)`.
+
+Infers each agent's operating-hour profile from its 7-day request history
+and flags requests arriving significantly outside that window. No
+registration-time configuration required — the profile is built from data.
+
+**`BEHAVIORAL:AFTER_HOURS_ANOMALY` (ESCALATE)**
+
+Flag format:
+```
+BEHAVIORAL:AFTER_HOURS_ANOMALY:hour=03UTC|profile=09h-17h_UTC|dark_hours=15|history_samples=42
+```
+
+Four tunable constants (all exported for callers to share):
+- `MIN_HISTORY_FOR_PROFILE = 20` — cold-start guard; returns `[]` until enough history exists.
+- `BASELINE_WINDOW_SECONDS = 604800.0` — 7-day window (full weekly cycle).
+- `HOUR_TOLERANCE = 1` — adjacent hours are not flagged; prevents scheduling-drift false-positives.
+- `MIN_DARK_FRACTION = 0.25` — at least 6/24 hours must be consistently idle for a meaningful
+  profile. Agents active in 19+ hours of the day are not profiled (no distinguishable pattern).
+
+Midnight-wrapping is handled via modular arithmetic on hour indices. Entries with missing or
+non-numeric timestamps are skipped without raising. The detector fires at most one flag per call.
+
+This is an ESCALATE signal (not a hard DENY) — the flag feeds the existing `make_decision()`
+flag → ESCALATE path with no new decision logic required.
+
+**Modified: `core/trust_engine.py`**
+
+- Added `from core.time_anomaly import detect_time_anomaly as _detect_time_anomaly, BASELINE_WINDOW_SECONDS as _TIME_BASELINE_WINDOW`.
+- In `compute_trust()`, after `analyze_kill_chain()`: one additional `get_agent_request_history()`
+  call with the 7-day window (indexed on `agent_id, timestamp DESC`) feeds the detector. Flags
+  appended to `all_flags`.
+
+**New file: `tests/test_time_anomaly.py`**
+
+78 stdlib-only tests across 11 test classes:
+
+- `TestConstants` (10), `TestUtcHour` (6), `TestBelowMinHistory` (5)
+- `TestNoProfileTooManyActiveHours` (4), `TestActiveHourNoAnomaly` (6)
+- `TestToleranceNoAnomaly` (8), `TestAnomalyDetected` (8), `TestFlagFormat` (10)
+- `TestCurrentTimestamp` (4), `TestMissingTimestamps` (5), `TestEdgeCases` (8)
+- `TestAgentIndependence` (4)
+
+All timestamps fixed to `_REF_TS = 1_750_377_600.0` (2025-06-20T00:00:00Z) so tests
+are not flaky against the real wall clock.
+
+### Test results
+
+```
+Ran 78 tests in 0.014s — OK
+  (78 new: tests/test_time_anomaly.py, stdlib only)
+
+Ran 14 tests in 0.156s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
+are not runnable in this environment due to network restrictions.
+
+### Market analysis
+
+Market analysis completed; recorded privately.
+
+---
+
 ## 2026-06-25 — Resource hammering detector (kill chain Detector 5)
 
 **Branch / PR:** `daily/2026-06-25-resource-hammering-detector` · https://github.com/ElamOlame31/agentgate-public/pull/15
