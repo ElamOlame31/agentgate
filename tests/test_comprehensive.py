@@ -1073,7 +1073,7 @@ class TestAudit:
         # Log one entry manually with an old timestamp via SQL
         import sqlite3
         from pathlib import Path
-        db_path = Path(__file__).parent.parent / "agentgate_audit.db"
+        from core.audit import DB_PATH as db_path
         conn = sqlite3.connect(db_path)
         old_ts = time.time() - 120  # 2 minutes ago
         conn.execute(
@@ -1105,7 +1105,7 @@ class TestAudit:
         uid = f"cleanup_{uuid.uuid4().hex[:8]}"
         import sqlite3
         from pathlib import Path
-        db_path = Path(__file__).parent.parent / "agentgate_audit.db"
+        from core.audit import DB_PATH as db_path
         conn = sqlite3.connect(db_path)
         old_ts = time.time() - 7200  # 2 hours ago
         conn.execute(

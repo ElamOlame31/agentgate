@@ -87,7 +87,10 @@ class TestWALMode:
         assert row[0].upper() == "WAL", f"Expected WAL, got {row[0]}"
 
     def test_synchronous_is_normal(self):
-        conn = sqlite3.connect(_audit.DB_PATH)
+        # synchronous is a per-connection pragma and does not persist in the
+        # file, so it has to be read on a connection _open_db() prepared —
+        # a raw sqlite3.connect() can only ever report the default (FULL).
+        conn = _audit._open_db()
         row = conn.execute("PRAGMA synchronous").fetchone()
         conn.close()
         # 1 = NORMAL in SQLite pragma integer encoding
