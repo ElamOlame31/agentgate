@@ -24,7 +24,10 @@ def hash_token(token: str) -> str:
     """Return the SHA-256 hex digest of a token. Used for storage and comparison."""
     return hashlib.sha256(token.encode()).hexdigest()
 
-DB_PATH = Path(__file__).parent.parent / "agentgate_audit.db"
+DB_PATH = Path(
+    os.getenv("AGENTGATE_DB_PATH")
+    or Path(__file__).parent.parent / "agentgate_audit.db"
+)
 
 
 def _open_db(path: Path | None = None) -> sqlite3.Connection:
@@ -194,8 +197,11 @@ def init_db():
 
 
 def _get_last_entry_hash(conn) -> str:
+    # Order by rowid, not timestamp: timestamp is when the response object was
+    # built, so queued writes can carry equal or out-of-order values and pick the
+    # wrong predecessor, branching the chain. rowid is true insertion order.
     row = conn.execute(
-        "SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY timestamp DESC LIMIT 1"
+        "SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
     return row[0] if row else "genesis"
 
@@ -257,7 +263,9 @@ def get_recent_decisions(limit: int = 50) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+        # rowid breaks ties: responses built in the same millisecond share a
+        # timestamp, and without it their relative order is unspecified.
+        "SELECT * FROM audit_log ORDER BY timestamp DESC, rowid DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -669,9 +677,10 @@ def verify_chain() -> dict:
     """Walk the HMAC chain and return whether the audit log is intact."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Must walk the same order the chain was built in — insertion order.
     rows = conn.execute(
         "SELECT id, full_json, entry_hash FROM audit_log "
-        "WHERE entry_hash IS NOT NULL ORDER BY timestamp ASC"
+        "WHERE entry_hash IS NOT NULL ORDER BY rowid ASC"
     ).fetchall()
     conn.close()
     if not rows:

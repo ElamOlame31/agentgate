@@ -605,6 +605,12 @@ def _normalize_resource(resource: str) -> str:
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("200/minute")
 async def authorize(request: Request, body: AuthorizationRequest):
+    # Every return path below writes its decision with log_decision(), not
+    # log_decision_queued(). The audit entry must be durable before the
+    # response leaves this function: the caller executes on a PERMIT, so an
+    # entry still sitting in the writer queue means an action can run with no
+    # record of what authorized it. Queued writes belong on paths that do not
+    # gate an action.
     # Always generate server-side — client-supplied IDs would allow audit log
     # manipulation and replay attacks via predictable or colliding request IDs.
     body.request_id = str(uuid.uuid4())
@@ -621,7 +627,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Unknown agent → deny immediately
     if body.agent_id not in _agents:
         response = _build_unknown_agent_response(body)
-        audit.log_decision_queued(response, False)
+        audit.log_decision(response, False)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         return response
 
@@ -680,7 +686,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             ),
             attack_flags=["QUARANTINED", f"QUARANTINE_TRIGGER:{q_record.trigger}"],
         )
-        audit.log_decision_queued(response)
+        audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
             "DENY", body.agent_id, body.action, body.resource,
@@ -692,7 +698,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
         response = _build_policy_blocked_response(body, agent, policy_match)
-        audit.log_decision_queued(response)
+        audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
             response.decision.value, body.agent_id,
@@ -752,7 +758,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 attack_flags=["INJECTION_DETECTED", f"INJECTION_CONFIDENCE:{round(scan_result.confidence * 100)}%"],
                 injection_score=scan_result.confidence,
             )
-            audit.log_decision_queued(response)
+            audit.log_decision(response)
             await manager.broadcast({"type": "decision", "data": response.model_dump()})
             fire_alert(
                 "DENY", body.agent_id, body.action, body.resource,
@@ -814,7 +820,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             attack_flags=flags,
             injection_score=injection_risk if injection_risk > 0 else None,
         )
-        audit.log_decision_queued(response)
+        audit.log_decision(response)
         return response
 
     response = AuthorizationResponse(
@@ -872,7 +878,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 0,
             )
 
-    audit.log_decision_queued(response)
+    audit.log_decision(response)
     await manager.broadcast({"type": "decision", "data": response.model_dump()})
     fire_alert(
         decision.value, body.agent_id,

@@ -24,7 +24,10 @@ from pydantic import BaseModel
 from typing import Optional
 import anthropic
 
-DB_PATH = Path(__file__).parent.parent / "agentgate_audit.db"
+DB_PATH = Path(
+    os.getenv("AGENTGATE_DB_PATH")
+    or Path(__file__).parent.parent / "agentgate_audit.db"
+)
 
 
 class Policy(BaseModel):
