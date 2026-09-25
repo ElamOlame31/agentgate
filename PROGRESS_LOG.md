@@ -427,6 +427,9 @@ Market analysis completed; recorded privately.
 ## 2026-06-20 — Pipeline latency tracking and `/metrics` endpoint
 
 **Branch / PR:** `daily/2026-06-20-latency-metrics` · https://github.com/ElamOlame31/agentgate-public/pull/10
+## 2026-06-20 — Pipeline latency tracking and `/metrics` endpoint
+
+**Branch / PR:** `daily/2026-06-20-latency-metrics` · (PR link to follow)
 
 ### What changed
 
@@ -448,6 +451,19 @@ per-stage authorization latency in a bounded rolling window.
 - `MAX_SAMPLES = 1000` — per-component rolling window cap (≈8 KB per component).
 - Thread-safe via a single `threading.Lock` on all bucket operations.
 - Zero external dependencies; zero disk I/O.
+- `record(component, duration_ms)` — appends one observation; auto-evicts oldest
+  when the window is full.
+- `measure(component)` — context manager that times the enclosed block and calls
+  `record()` in the `finally` clause (records even on exception).
+- `get_stats(component)` — returns `p50_ms`, `p95_ms`, `p99_ms`, `mean_ms`,
+  `max_ms`, `count` computed via the nearest-rank percentile method on a
+  snapshot copy of the deque.
+- `all_stats()` — stats for all components, alphabetically sorted.
+- `component_names()` — names of components with at least one observation.
+- `reset()` — clears all data; intended for tests and server restart.
+- `MAX_SAMPLES = 1000` — bounded window cap; each component holds at most
+  1 000 observations (≈8 KB of floats); oldest are evicted automatically.
+- Thread-safe: one `threading.Lock` guards all bucket operations.
 
 **Modified: `server/main.py`**
 
@@ -465,6 +481,18 @@ Four instrumentation points added to the `/authorize` handler:
 
 Returns live p50/p95/p99 breakdowns for every tracked pipeline stage since the
 last server restart. In-memory only — no disk I/O, no log correlation required.
+1. `_t_authorize_start = time.monotonic()` — recorded before any handler logic.
+2. `with _latency.measure("policy"):` — wraps the NL policy hard-block check.
+3. `with _latency.measure("trust"):` — wraps the `compute_trust()` call
+   (SQLite history queries + 4-D scoring).
+4. `with _latency.measure("audit_write"):` — wraps `audit.log_decision_queued()`.
+5. `_latency.record("total", ...)` — end-to-end latency recorded after SIEM
+   dispatch, immediately before `return response`.
+
+**New endpoint: `GET /metrics`**
+
+Requires API key. Returns live p50/p95/p99 breakdowns for every tracked
+pipeline stage since the last server restart:
 
 ```json
 {
@@ -483,6 +511,8 @@ last server restart. In-memory only — no disk I/O, no log correlation required
 
 - `TestEmptyState` (5 tests) — zero-count response, zero percentiles for unknown
   component, component name preserved in result, empty all_stats and component_names.
+- `TestEmptyState` (5 tests) — zero-count response, all percentiles zero,
+  component name preserved, empty all_stats and component_names.
 - `TestSingleObservation` (6 tests) — all percentiles equal the single value,
   mean and max correct.
 - `TestKnownPercentiles` (7 tests) — exact percentile verification against
@@ -500,6 +530,18 @@ last server restart. In-memory only — no disk I/O, no log correlation required
   10 concurrent components without corruption.
 - `TestConstants` (2 tests) — MAX_SAMPLES in [100, 10000].
 - `TestPercentileEdgeCases` (3 tests) — all-same values, two-value p99, rounding.
+  oldest entries evicted, MAX_SAMPLES is a positive integer.
+- `TestMultipleComponents` (5 tests) — components are independent, all_stats
+  returns all, alphabetical sort of all_stats, component_names excludes
+  unrecorded, component_names sorted.
+- `TestReset` (2 tests) — clears all data, allows fresh recording.
+- `TestContextManager` (4 tests) — records nonzero duration, reasonable timing
+  for sleep(10ms), records even when block raises, component name preserved.
+- `TestThreadSafety` (2 tests) — 20 threads × 50 records each, no corruption
+  across 10 concurrent components.
+- `TestConstants` (2 tests) — MAX_SAMPLES bounds.
+- `TestPercentileEdgeCases` (3 tests) — all-same values, two-value p99,
+  three-decimal rounding.
 
 ### Test results
 

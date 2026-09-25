@@ -12,7 +12,7 @@ import os
 import time
 import uuid
 import pytest
-from core.receipts.merkle import merkle_root, merkle_proof, verify_proof, leaf_hash, _sha256
+from core.receipts.receipts.merkle import merkle_root, merkle_proof, verify_proof, leaf_hash, _sha256
 from core.platform import audit
 
 

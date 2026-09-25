@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from core.receipts import receipts, response_signing
-from core.receipts.action_ref import compute_action_ref
+from core.receipts.receipts import receipts, response_signing
+from core.receipts.receipts.action_ref import compute_action_ref
 
 
 OPERATION = dict(

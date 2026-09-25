@@ -16,7 +16,7 @@ from agentgate import action_ref as client_ref
 from agentgate.exceptions import (
     AgentGateBindingError, AgentGateReceiptError,
 )
-from core.receipts import action_ref as server_ref
+from core.receipts.receipts import action_ref as server_ref
 
 
 # ── The pin: client and server must not drift ─────────────────────────────────

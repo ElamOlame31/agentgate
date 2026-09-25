@@ -105,6 +105,7 @@ from core.receipts import action_ref as _action_ref
 from core.receipts import receipts as _receipts
 from core.enforcement import labels as _labels
 from core.enforcement import fail_mode as _fail_mode
+from core.enforcement import latency as _latency
 from core.receipts import receipt_signing as _receipt_signing
 
 # Persistent agent registry (loaded from SQLite on startup)
@@ -494,6 +495,23 @@ async def signing_info():
     No secret material is included — key_id is a short fingerprint only.
     """
     return _response_signing.get_signing_info()
+
+
+@app.get("/metrics", dependencies=[Depends(require_api_key)])
+async def get_metrics():
+    """
+    Latency percentiles per stage of the authorization pipeline.
+
+    Computed from the last 1 000 observations per component, in memory, reset
+    on restart. This is the number to check before claiming one: the hot path
+    is where a gate either fits into an agent loop or does not.
+
+      total   end to end
+      trust   4-D scoring, dominated by the purpose embedding
+      flow    information-flow state, derived from the audit trail
+      policy  operator rules
+    """
+    return {"latency_ms": _latency.all_stats()}
 
 
 @app.get("/receipts/public-key")
@@ -925,21 +943,23 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # AGENTGATE_FAIL_MODE=open re-raises instead, for development only.
     try:
         # compute_trust calls SQLite (request history, baselines) — run in thread pool
-        breakdown, flags = await asyncio.to_thread(
-            trust_engine.compute_trust, agent, body, _agents, injection_risk,
-            contagion_penalty, contagion_flags,
-        )
+        with _latency.measure("trust"):
+            breakdown, flags = await asyncio.to_thread(
+                trust_engine.compute_trust, agent, body, _agents, injection_risk,
+                contagion_penalty, contagion_flags,
+            )
         # ── Information flow: may this data reach this destination? ───────────
         # Deliberately outside the trust score. A score is a judgement that can be
         # argued with; a lattice violation is a fact. Mixing them would let a high
         # score buy its way past a flow that must not happen, which is exactly the
         # hole a weighted average leaves open.
-        flow_state = await asyncio.to_thread(
-            _labels.compute_flow_state,
-            body.agent_id,
-            agent.processes_external_content,
-            injection_risk >= 0.5,
-        )
+        with _latency.measure("flow"):
+            flow_state = await asyncio.to_thread(
+                _labels.compute_flow_state,
+                body.agent_id,
+                agent.processes_external_content,
+                injection_risk >= 0.5,
+            )
         flow_flags = _labels.check_flow(
             flow_state, body.action, body.resource,
             body.arguments, agent.allowed_destinations,
