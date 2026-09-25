@@ -265,9 +265,13 @@ class TestThroughTheAPI:
 
     def test_response_signature_covers_the_ref(self, gate):
         body = self._authorize(gate, BASE["arguments"])
+        flow = body.get("flow") or {}
+        claim = (f"{flow['confidentiality']}|{flow['integrity']}"
+                 if flow.get("confidentiality") else "")
         ok, why = response_signing.verify_response(
             body["response_nonce"], body["response_sig"], body["request_id"],
-            body["agent_id"], body["decision"], body["timestamp"], body["action_ref"])
+            body["agent_id"], body["decision"], body["timestamp"],
+            body["action_ref"], claim)
         assert ok, why
 
     def test_different_arguments_yield_different_refs(self, gate):

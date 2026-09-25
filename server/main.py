@@ -102,6 +102,8 @@ from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_D
 from core import response_signing as _response_signing
 from core import action_ref as _action_ref
 from core import receipts as _receipts
+from core import labels as _labels
+from core import receipt_signing as _receipt_signing
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -115,6 +117,7 @@ _SCAN_TTL = 120.0  # seconds before a scan result expires
 def _stamp_response(
     response: AuthorizationResponse,
     arguments: dict | None = None,
+    flow: str = "",
 ) -> None:
     """Seal the response in place: operation reference first, then nonce and MAC.
 
@@ -145,9 +148,19 @@ def _stamp_response(
         response.decision.value,
         response.timestamp,
         ref,
+        flow,
     )
     response.response_nonce = nonce
     response.response_sig = sig
+
+    # Same bytes, asymmetric signature: this is the one a third party can check
+    # against the published key without being able to mint receipts of its own.
+    canonical = _response_signing.canonical_receipt_bytes(
+        nonce, response.request_id, response.agent_id,
+        response.decision.value, response.timestamp, ref, flow,
+    )
+    response.receipt_sig = _receipt_signing.sign(canonical)
+    response.key_id = _receipt_signing.key_id()
 
 
 _MAX_WS_CONNECTIONS = 100
@@ -479,6 +492,25 @@ async def signing_info():
     return _response_signing.get_signing_info()
 
 
+@app.get("/receipts/public-key")
+async def receipt_public_key():
+    """
+    The key anyone needs to verify a receipt, and nothing else.
+
+    Unauthenticated on purpose. A verifier is usually not a customer — an
+    auditor, a regulator, an insurer's assessor — and requiring a credential to
+    check a signature would defeat what the signature is for. Only the public
+    half is served; it cannot be used to issue anything.
+    """
+    return {
+        "algorithm": "Ed25519",
+        "key_id": _receipt_signing.key_id(),
+        "public_key_pem": _receipt_signing.public_key_pem(),
+        "canonical_fields": _response_signing.get_signing_info()["canonical_fields"],
+        "canonical_sep": _response_signing.CANONICAL_SEP,
+    }
+
+
 @app.post("/receipts/redeem", dependencies=[Depends(require_api_key)])
 @limiter.limit("200/minute")
 async def redeem_receipt(request: Request, body: ReceiptRedeemRequest):
@@ -504,6 +536,7 @@ async def redeem_receipt(request: Request, body: ReceiptRedeemRequest):
         decision=body.decision,
         timestamp=body.timestamp,
         action_ref=body.action_ref,
+        flow=body.flow,
     )
     if not redeemed:
         await manager.broadcast({
@@ -886,11 +919,33 @@ async def authorize(request: Request, body: AuthorizationRequest):
         trust_engine.compute_trust, agent, body, _agents, injection_risk,
         contagion_penalty, contagion_flags,
     )
-    decision = trust_engine.make_decision(breakdown, flags)
-    # Derived locally from the scores that produced the verdict. The prose
-    # version reaches a third-party model, which has no business on the path an
-    # agent waits on — see GET /decisions/{id}/explain.
-    explanation = local_explanation(breakdown, decision, flags)
+    # ── Information flow: may this data reach this destination? ───────────
+    # Deliberately outside the trust score. A score is a judgement that can be
+    # argued with; a lattice violation is a fact. Mixing them would let a high
+    # score buy its way past a flow that must not happen, which is exactly the
+    # hole a weighted average leaves open.
+    flow_state = await asyncio.to_thread(
+        _labels.compute_flow_state,
+        body.agent_id,
+        agent.processes_external_content,
+        injection_risk >= 0.5,
+    )
+    flow_flags = _labels.check_flow(
+        flow_state, body.action, body.resource,
+        body.arguments, agent.allowed_destinations,
+    )
+    if flow_flags:
+        flags = list(flags) + flow_flags
+        decision = Decision.DENY
+        explanation = (
+            f"Blocked: {_labels.explain_violation(flow_flags, flow_state)}."
+        )
+    else:
+        decision = trust_engine.make_decision(breakdown, flags)
+        # Derived locally from the scores that produced the verdict. The prose
+        # version reaches a third-party model, which has no business on the path
+        # an agent waits on — see GET /decisions/{id}/explain.
+        explanation = local_explanation(breakdown, decision, flags)
 
     # ── Human-in-the-loop: pause ESCALATE for manual review ───────────────
     if decision == Decision.ESCALATE and agent.requires_human_approval:
@@ -918,8 +973,9 @@ async def authorize(request: Request, body: AuthorizationRequest):
             explanation=f"[PENDING HUMAN APPROVAL] {explanation}",
             attack_flags=flags,
             injection_score=injection_risk if injection_risk > 0 else None,
+            flow=flow_state.to_dict(),
         )
-        _stamp_response(response, body.arguments)
+        _stamp_response(response, body.arguments, flow_state.canonical())
         audit.log_decision(response)
         return response
 
@@ -933,8 +989,9 @@ async def authorize(request: Request, body: AuthorizationRequest):
         explanation=explanation,
         attack_flags=flags,
         injection_score=injection_risk if injection_risk > 0 else None,
+        flow=flow_state.to_dict(),
     )
-    _stamp_response(response, body.arguments)
+    _stamp_response(response, body.arguments, flow_state.canonical())
 
     # ── Quarantine triggers ────────────────────────────────────────────────
     if decision == Decision.DENY:

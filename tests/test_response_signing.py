@@ -403,17 +403,18 @@ class TestCanonicalBytes(unittest.TestCase):
         # action_ref joined the canonical string when the MAC started binding
         # the operation and not only the verdict; it is last so that a receipt
         # issued before it existed still verifies with an empty value.
-        result = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref")
+        result = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref", "PUBLIC|TRUSTED")
         decoded = result.decode("utf-8")
         parts = decoded.split(rs.CANONICAL_SEP)
-        self.assertEqual(len(parts), 6)
-        self.assertEqual(parts[-1], "ref")
+        # flow is two fields joined by the same separator, so it widens the split
+        self.assertEqual(parts[5], "ref")
+        self.assertEqual(parts[6:], ["PUBLIC", "TRUSTED"])
 
     def test_action_ref_defaults_to_empty_and_keeps_the_field(self):
         parts = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0).decode("utf-8").split(
             rs.CANONICAL_SEP)
-        self.assertEqual(len(parts), 6)
-        self.assertEqual(parts[-1], "")
+        self.assertEqual(len(parts), 7)
+        self.assertEqual(parts[-2:], ["", ""])
 
     def test_a_different_action_ref_changes_the_canonical_bytes(self):
         a = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref-one")

@@ -81,6 +81,7 @@ def redeem(
     decision: str,
     timestamp: float,
     action_ref: str = "",
+    flow: str = "",
 ) -> tuple[bool, str]:
     """
     Spend a receipt. Returns (redeemed, reason).
@@ -98,7 +99,7 @@ def redeem(
         return False, "RECEIPT_NOT_PERMIT"
 
     valid, reason = response_signing.verify_response(
-        nonce, mac, request_id, agent_id, decision, timestamp, action_ref
+        nonce, mac, request_id, agent_id, decision, timestamp, action_ref, flow
     )
     if not valid:
         return False, reason

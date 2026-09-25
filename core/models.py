@@ -47,6 +47,11 @@ class AgentRegistration(BaseModel):
     # Set at delegation time. Prevents trust-washing: a low-trust parent cannot spawn
     # a child that earns a higher score than the parent could ever reach.
     trust_ceiling: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    # Where this agent may send data. Declared before any content arrives,
+    # which is what makes it meaningful: once a session carries material the
+    # agent did not author, that material must not get to choose the
+    # destination. Patterns are fnmatch, e.g. ["/outbox/*", "*@ourcompany.com"].
+    allowed_destinations: Optional[List[str]] = Field(default=None, max_length=100)
 
 
 class AuthorizationRequest(BaseModel):
@@ -84,6 +89,8 @@ class ReceiptRedeemRequest(BaseModel):
     decision: str = Field(max_length=32)
     timestamp: float
     action_ref: str = Field(default="", max_length=128)
+    # Signed alongside the rest, so it has to come back to check the MAC.
+    flow: str = Field(default="", max_length=128)
 
 
 class OutputSanitizeRequest(BaseModel):
@@ -131,3 +138,15 @@ class AuthorizationResponse(BaseModel):
     # Resource in the normalized form action_ref was computed over, so the
     # caller can reproduce the digest without reimplementing normalization.
     normalized_resource: Optional[str] = None
+    # Information-flow state of the session at decision time: what the agent
+    # had been exposed to, and whether anything it did not author influenced
+    # it. Derived from the audit trail, so a holder of the trail can recompute
+    # it rather than take the server's word for it.
+    flow: Optional[dict] = None
+    # Ed25519 signature over the same canonical bytes as response_sig.
+    # The HMAC authenticates the receipt to whoever holds the shared secret;
+    # this one lets an auditor check it with only the published key.
+    receipt_sig: Optional[str] = None
+    # Fingerprint of the key that signed, so a verifier can tell a key
+    # rotation from a forgery.
+    key_id: Optional[str] = None

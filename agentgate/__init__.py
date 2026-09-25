@@ -54,6 +54,18 @@ from agentgate.exceptions import (
 )
 
 
+def _flow_claim(result: dict) -> str:
+    """The flow state in the form it was signed in.
+
+    The server signs a compact string, not the dict it returns, so a receipt
+    has to be handed back in that same form or the MAC will not check out.
+    """
+    flow = result.get("flow") or {}
+    if not flow.get("confidentiality"):
+        return ""
+    return f"{flow['confidentiality']}|{flow['integrity']}"
+
+
 def _material_arguments(
     bound: dict,
     resource_arg: str,
@@ -336,6 +348,7 @@ class AgentGate:
                     "decision": result.get("decision") or "",
                     "timestamp": result.get("timestamp") or 0.0,
                     "action_ref": result.get("action_ref") or "",
+                    "flow": _flow_claim(result),
                 },
                 timeout=self.timeout,
             )
@@ -658,6 +671,7 @@ class AsyncAgentGate:
                         "decision": result.get("decision") or "",
                         "timestamp": result.get("timestamp") or 0.0,
                         "action_ref": result.get("action_ref") or "",
+                    "flow": _flow_claim(result),
                     },
                 )
         except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
