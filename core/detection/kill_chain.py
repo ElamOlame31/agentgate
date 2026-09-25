@@ -19,8 +19,8 @@ Flags are tiered:
 import time
 import posixpath
 from urllib.parse import unquote
-from core import audit
-from core.models import ResourceSensitivity, EXFILTRATION_ACTIONS as _EXFIL_ACTIONS
+from core.platform import audit
+from core.platform.models import ResourceSensitivity, EXFILTRATION_ACTIONS as _EXFIL_ACTIONS
 
 # Maximum query window — one DB round-trip per authorize call; filter in-process per detector.
 # Cross-session history survives server restarts because request_history is SQLite-backed.
@@ -60,7 +60,7 @@ def _top_prefix(resource: str) -> str:
 
 
 def _sensitivity(resource: str, action: str) -> ResourceSensitivity:
-    from core.trust_engine import classify_resource_sensitivity
+    from core.enforcement.trust_engine import classify_resource_sensitivity
     return classify_resource_sensitivity(resource, action)
 
 

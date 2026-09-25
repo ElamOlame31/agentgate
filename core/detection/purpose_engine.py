@@ -55,7 +55,7 @@ def score_purpose_alignment(declared_purpose: str, action: str, resource: str, j
 _DESTRUCTIVE_ACTIONS = {"delete", "remove", "drop", "truncate", "wipe", "purge", "destroy", "overwrite"}
 
 # Import canonical exfiltration action set — single source of truth in trust_engine
-from core.models import EXFILTRATION_ACTIONS as _EXFILTRATION_ACTIONS
+from core.platform.models import EXFILTRATION_ACTIONS as _EXFILTRATION_ACTIONS
 
 # Paths that are sensitive and should penalize out-of-scope agents
 _SENSITIVE_PATHS = {"confidential", "salary", "payroll", "password", "secret", "private", "admin", "root", "cred"}

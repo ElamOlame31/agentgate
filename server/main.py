@@ -73,37 +73,38 @@ async def require_admin_key(request: Request):
         await require_api_key(request)
 
 
-from core.models import (
+from core.platform.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
     ContentScanRequest, ContentScanResponse, OutputSanitizeRequest,
     ReceiptRedeemRequest, TrustBreakdown,
 )
-from core import audit, trust_engine
-from core.audit import hash_token
-from core.token import (
+from core.enforcement import trust_engine
+from core.platform import audit
+from core.platform.audit import hash_token
+from core.platform.token import (
     issue_agent_token, verify_agent_jwt, get_public_key_pem,
     is_jwt_format, is_jti,
 )
 import jwt as _jwt
-from core.explainer import generate_explanation, local_explanation
-from core.policy_engine import (
+from core.platform.explainer import generate_explanation, local_explanation
+from core.enforcement.policy_engine import (
     create_policy, get_all_policies, delete_policy,
     check_policies, Policy, init_policy_table
 )
-from core.alerts import (
+from core.platform.alerts import (
     fire_alert, fire_siem_event, fire_approval_request,
     alerts_configured, alert_status, siem_configured, siem_status,
 )
-from core.report import generate_pdf, generate_csv
-from core import approvals
-from core import quarantine as _quarantine
-from core import contagion as _contagion
-from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
-from core import response_signing as _response_signing
-from core import action_ref as _action_ref
-from core import receipts as _receipts
-from core import labels as _labels
-from core import receipt_signing as _receipt_signing
+from core.platform.report import generate_pdf, generate_csv
+from core.platform import approvals
+from core.detection import quarantine as _quarantine
+from core.detection import contagion as _contagion
+from core.enforcement.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
+from core.receipts import response_signing as _response_signing
+from core.receipts import action_ref as _action_ref
+from core.receipts import receipts as _receipts
+from core.enforcement import labels as _labels
+from core.receipts import receipt_signing as _receipt_signing
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -725,7 +726,7 @@ def _normalize_resource(resource: str) -> str:
       4. Guarantee a leading /
     """
     # Double-decode to catch %252e%252e → %2e%2e → ..
-    # Delegates to core.action_ref so the value hashed into action_ref and the
+    # Delegates to core.receipts.action_ref so the value hashed into action_ref and the
     # value policy is evaluated against can never drift apart.
     return _action_ref.normalize_resource(resource)
 
@@ -791,8 +792,8 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # ── Quarantine check — hard block before scoring ──────────────────────
     q_record = _quarantine.get_record(body.agent_id)
     if q_record:
-        from core.models import TrustBreakdown, ResourceSensitivity
-        from core.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
+        from core.platform.models import TrustBreakdown, ResourceSensitivity
+        from core.enforcement.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
         sensitivity = classify_resource_sensitivity(body.resource, body.action)
         breakdown = TrustBreakdown(
             identity_score=0, delegation_score=0,
@@ -851,7 +852,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Agents with processes_external_content=True can submit the document/tool
     # output directly in the authorization request — no separate /scan call needed.
     if agent.processes_external_content and body.content:
-        from core.injection_detector import scan_content as _scan_content
+        from core.detection.injection_detector import scan_content as _scan_content
         scan_result = await asyncio.to_thread(_scan_content, body.content, agent.declared_purpose)
         _recent_scans[body.agent_id] = {
             "score": scan_result.confidence,
@@ -869,8 +870,8 @@ async def authorize(request: Request, body: AuthorizationRequest):
             }
         })
         if scan_result.level == "injection":
-            from core.models import TrustBreakdown
-            from core.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
+            from core.platform.models import TrustBreakdown
+            from core.enforcement.trust_engine import classify_resource_sensitivity, SENSITIVITY_THRESHOLDS
             sensitivity = classify_resource_sensitivity(body.resource, body.action)
             breakdown = TrustBreakdown(
                 identity_score=100, delegation_score=100,
@@ -1060,7 +1061,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
 @app.post("/scan", response_model=ContentScanResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
 async def scan_content_endpoint(request: Request, body: ContentScanRequest):
-    from core.injection_detector import scan_content
+    from core.detection.injection_detector import scan_content
 
     agent = _agents.get(body.agent_id)
     if agent is None:
@@ -1118,7 +1119,7 @@ async def sanitize_output_endpoint(request: Request, body: OutputSanitizeRequest
     imperative injection phrases, and exfiltration URLs. Returns a sanitized
     copy of the content with all findings redacted.
     """
-    from core.output_sanitizer import sanitize as _sanitize
+    from core.detection.output_sanitizer import sanitize as _sanitize
 
     agent = _agents.get(body.agent_id)
     if agent is None:
@@ -1197,7 +1198,7 @@ async def sanitize_output_endpoint(request: Request, body: OutputSanitizeRequest
 
 
 def _build_unknown_agent_response(request: AuthorizationRequest) -> AuthorizationResponse:
-    from core.models import TrustBreakdown, ResourceSensitivity
+    from core.platform.models import TrustBreakdown, ResourceSensitivity
     breakdown = TrustBreakdown(
         identity_score=0, delegation_score=0,
         purpose_alignment_score=0, behavioral_score=0,
@@ -1221,8 +1222,8 @@ def _build_policy_blocked_response(
     agent: AgentRegistration,
     policy_match
 ) -> AuthorizationResponse:
-    from core.models import TrustBreakdown, ResourceSensitivity
-    from core.trust_engine import classify_resource_sensitivity
+    from core.platform.models import TrustBreakdown, ResourceSensitivity
+    from core.enforcement.trust_engine import classify_resource_sensitivity
     sensitivity = classify_resource_sensitivity(request.resource)
     breakdown = TrustBreakdown(
         identity_score=100, delegation_score=100,

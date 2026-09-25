@@ -4,14 +4,14 @@ import re
 import unicodedata
 import urllib.parse
 from datetime import datetime, timezone
-from core.models import (
+from core.platform.models import (
     AgentRegistration, AuthorizationRequest,
     TrustBreakdown, ResourceSensitivity, Decision,
     EXFILTRATION_ACTIONS,
 )
-from core.purpose_engine import compute_purpose_score
-from core import audit
-from core.kill_chain import analyze_kill_chain
+from core.detection.purpose_engine import compute_purpose_score
+from core.platform import audit
+from core.detection.kill_chain import analyze_kill_chain
 
 # Sensitivity thresholds: minimum trust score required to PERMIT
 SENSITIVITY_THRESHOLDS = {
@@ -146,7 +146,7 @@ def score_delegation(
     request: "AuthorizationRequest",
     agents: dict,
 ) -> tuple[float, list[str]]:
-    from core.delegation import (
+    from core.enforcement.delegation import (
         check_chain_scope, compute_chain_trust_multiplier, MAX_DELEGATION_DEPTH
     )
     flags = []

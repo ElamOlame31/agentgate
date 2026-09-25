@@ -40,8 +40,8 @@ Limits, stated plainly:
 
 from enum import IntEnum
 
-from core import audit
-from core.models import EXFILTRATION_ACTIONS, ResourceSensitivity
+from core.platform import audit
+from core.platform.models import EXFILTRATION_ACTIONS, ResourceSensitivity
 
 
 class Confidentiality(IntEnum):
@@ -80,7 +80,7 @@ _READ_ACTIONS = frozenset({"read", "search", "list", "query", "get", "fetch", "v
 
 def confidentiality_of(resource: str, action: str = "") -> Confidentiality:
     """Grade a resource on the confidentiality lattice."""
-    from core.trust_engine import classify_resource_sensitivity
+    from core.enforcement.trust_engine import classify_resource_sensitivity
 
     sensitivity = classify_resource_sensitivity(resource, action)
     return _SENSITIVITY_TO_CONFIDENTIALITY[sensitivity]

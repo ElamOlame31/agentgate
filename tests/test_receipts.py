@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from core import receipts, response_signing
-from core.action_ref import compute_action_ref
+from core.receipts import receipts, response_signing
+from core.receipts.action_ref import compute_action_ref
 
 
 OPERATION = dict(
@@ -176,7 +176,7 @@ class TestCleanup:
         # Write a row directly with an old issued_at: redeem() would refuse it
         # at the signature stage, which is exactly why such rows can be dropped.
         import sqlite3
-        from core import audit
+        from core.platform import audit
 
         stale_nonce = "stale-nonce-0001"
         conn = sqlite3.connect(audit.DB_PATH)

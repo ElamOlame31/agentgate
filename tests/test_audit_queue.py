@@ -17,8 +17,8 @@ import uuid
 import threading
 import pytest
 
-import core.audit as _audit
-from core.audit import (
+import core.platform.audit as _audit
+from core.platform.audit import (
     init_db,
     log_decision,
     log_decision_queued,
@@ -27,7 +27,7 @@ from core.audit import (
     get_recent_decisions,
     DB_PATH,
 )
-from core.models import (
+from core.platform.models import (
     AuthorizationResponse, Decision, TrustBreakdown, ResourceSensitivity,
 )
 

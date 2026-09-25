@@ -15,8 +15,8 @@ import uuid
 import pytest
 from unittest.mock import patch
 
-from core import audit
-from core.kill_chain import (
+from core.platform import audit
+from core.detection.kill_chain import (
     analyze_kill_chain,
     BULK_READ_THRESHOLD,
     BULK_READ_THRESHOLD_24H,
@@ -26,7 +26,7 @@ from core.kill_chain import (
     _FAST_WINDOW,
     _RAMP_WINDOW,
 )
-from core import quarantine as q
+from core.detection import quarantine as q
 
 
 # ── Helper: insert history with arbitrary timestamp ───────────────────────────

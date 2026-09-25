@@ -1,6 +1,6 @@
 import os
 import anthropic
-from core.models import TrustBreakdown, Decision
+from core.platform.models import TrustBreakdown, Decision
 
 _client: anthropic.Anthropic | None = None
 

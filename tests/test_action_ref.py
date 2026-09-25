@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from core import action_ref, response_signing
-from core.action_ref import ActionRefError, compute_action_ref, matches
+from core.receipts import action_ref, response_signing
+from core.receipts.action_ref import ActionRefError, compute_action_ref, matches
 
 
 BASE = dict(
@@ -281,7 +281,7 @@ class TestThroughTheAPI:
 
     def test_sealed_values_are_inside_the_audit_entry(self, gate):
         """The seal must be in the record, not only in the reply."""
-        from core import audit
+        from core.platform import audit
 
         body = self._authorize(gate, BASE["arguments"])
         entry = next(e for e in audit.get_recent_decisions(limit=25)

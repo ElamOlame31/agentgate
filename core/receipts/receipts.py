@@ -36,8 +36,8 @@ freshness horizon, after which the signature check rejects the receipt anyway.
 import sqlite3
 import time
 
-from core import audit
-from core import response_signing
+from core.platform import audit
+from core.receipts import response_signing
 
 
 class RedemptionError(Exception):

@@ -13,8 +13,8 @@ import time
 import pytest
 
 from agentgate import verify as V
-from core import receipt_signing, response_signing
-from core.action_ref import compute_action_ref
+from core.receipts import receipt_signing, response_signing
+from core.receipts.action_ref import compute_action_ref
 
 
 OPERATION = dict(

@@ -9,8 +9,9 @@ author gets to choose where data goes.
 
 import pytest
 
-from core import audit, labels
-from core.labels import (
+from core.enforcement import labels
+from core.platform import audit
+from core.enforcement.labels import (
     Confidentiality, Integrity, FlowState,
     check_flow, compute_flow_state, confidentiality_of, extract_destinations,
 )
@@ -202,7 +203,7 @@ class TestFlowStateFromTheAuditTrail:
 class TestFlowIsSigned:
     def test_the_signature_covers_the_flow_state(self):
         import time
-        from core import response_signing as rs
+        from core.receipts import response_signing as rs
 
         ts = time.time()
         nonce, mac = rs.sign_response("req-1", "a", "PERMIT", ts, "ref", "SECRET|TRUSTED")
@@ -212,7 +213,7 @@ class TestFlowIsSigned:
     def test_altering_the_flow_state_invalidates_the_signature(self):
         """A receipt cannot be re-presented as if the session had been cleaner."""
         import time
-        from core import response_signing as rs
+        from core.receipts import response_signing as rs
 
         ts = time.time()
         nonce, mac = rs.sign_response("req-1", "a", "PERMIT", ts, "ref", "SECRET|TRUSTED")
@@ -222,5 +223,5 @@ class TestFlowIsSigned:
         assert why == "SIGNATURE_MISMATCH"
 
     def test_signing_info_advertises_the_field(self):
-        from core import response_signing as rs
+        from core.receipts import response_signing as rs
         assert "flow" in rs.get_signing_info()["canonical_fields"]

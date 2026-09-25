@@ -12,8 +12,8 @@ import os
 import time
 import uuid
 import pytest
-from core.merkle import merkle_root, merkle_proof, verify_proof, leaf_hash, _sha256
-from core import audit
+from core.receipts.merkle import merkle_root, merkle_proof, verify_proof, leaf_hash, _sha256
+from core.platform import audit
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -155,7 +155,7 @@ class TestMerkleDB:
 
     @pytest.fixture(autouse=True)
     def isolated_db(self, tmp_path):
-        import core.audit as _audit
+        import core.platform.audit as _audit
         old = _audit.DB_PATH
         _audit.DB_PATH = tmp_path / "merkle_test.db"
         _audit.init_db()

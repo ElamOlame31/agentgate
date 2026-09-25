@@ -21,7 +21,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 # Reuse injection patterns from the input scanner — same lexicon, output context
-from core.injection_detector import INJECTION_PATTERNS
+from core.detection.injection_detector import INJECTION_PATTERNS
 
 
 # ── Severity ordering ──────────────────────────────────────────────────────────

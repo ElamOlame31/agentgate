@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from core.models import AuthorizationResponse, AgentRegistration
+from core.platform.models import AuthorizationResponse, AgentRegistration
 
 _LOG_KEY = os.getenv("AGENTGATE_LOG_KEY", "agentgate-log-integrity-default").encode()
 
@@ -364,7 +364,7 @@ def seal_merkle_batch(force: bool = False) -> dict | None:
     Returns the checkpoint dict, or None if not enough entries (unless force=True).
     force=True seals whatever is pending, even a partial batch.
     """
-    from core.merkle import merkle_root as _root, leaf_hash as _leaf
+    from core.receipts.merkle import merkle_root as _root, leaf_hash as _leaf
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute("BEGIN EXCLUSIVE")
@@ -436,7 +436,7 @@ def get_merkle_proof(entry_id: str) -> dict | None:
     Return an inclusion proof for the given audit entry.
     Returns None if the entry is not found or not yet sealed.
     """
-    from core.merkle import merkle_proof as _proof, leaf_hash as _leaf, verify_proof as _verify
+    from core.receipts.merkle import merkle_proof as _proof, leaf_hash as _leaf, verify_proof as _verify
     conn = sqlite3.connect(DB_PATH)
     try:
         row = conn.execute(

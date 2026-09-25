@@ -16,8 +16,8 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-import core.quarantine as q
-from core.quarantine import (
+import core.detection.quarantine as q
+from core.detection.quarantine import (
     QUARANTINE_BASE_SECONDS, QUARANTINE_EXTENSION_SECONDS,
     QUARANTINE_MAX_SECONDS, CONSECUTIVE_DENY_THRESHOLD, DENY_WINDOW_SECONDS,
 )

@@ -43,7 +43,8 @@ def _unlink_db(path: Path) -> None:
 
 def _clear_process_state() -> None:
     """Drop every in-process store the server and core modules keep."""
-    from core import approvals, contagion, quarantine
+    from core.detection import contagion, quarantine
+    from core.platform import approvals
 
     # Timers fire _auto_deny() on a background thread; cancel before dropping
     # the store or a stale timer can resolve an approval in the next module.
@@ -66,7 +67,7 @@ def _clear_process_state() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _session_db():
     """Back-stop for anything touching the DB outside a module fixture."""
-    from core.audit import init_db
+    from core.platform.audit import init_db
 
     init_db()
     yield
@@ -76,8 +77,8 @@ def _session_db():
 @pytest.fixture(scope="module", autouse=True)
 def _isolated_module_state():
     """Fresh database and clean in-process stores for each test module."""
-    import core.audit as audit
-    import core.policy_engine as policy_engine
+    import core.platform.audit as audit
+    import core.enforcement.policy_engine as policy_engine
 
     db = Path(tempfile.gettempdir()) / f"agentgate_test_{uuid.uuid4().hex}.db"
     audit.DB_PATH = db

@@ -20,7 +20,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
-from core.purpose_engine import _get_model  # reuse already-loaded model
+from core.detection.purpose_engine import _get_model  # reuse already-loaded model
 
 
 # ── Injection keyword patterns ────────────────────────────────────────────────

@@ -15,7 +15,7 @@ TIMEOUT_SECONDS = 90
 # Lazy import to avoid circular import at module load time
 def _persist_create(request_id, agent_id, action, resource, explanation, trust_score, expires_at):
     try:
-        from core import audit as _audit
+        from core.platform import audit as _audit
         _audit.save_pending_approval(request_id, agent_id, action, resource,
                                      explanation, trust_score, expires_at)
     except Exception:
@@ -23,7 +23,7 @@ def _persist_create(request_id, agent_id, action, resource, explanation, trust_s
 
 def _persist_resolve(request_id, status):
     try:
-        from core import audit as _audit
+        from core.platform import audit as _audit
         _audit.resolve_pending_approval(request_id, status)
     except Exception:
         pass

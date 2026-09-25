@@ -14,8 +14,8 @@ import time
 import pytest
 from unittest.mock import patch
 
-import core.contagion as contagion
-from core.models import AgentRegistration
+import core.detection.contagion as contagion
+from core.platform.models import AgentRegistration
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ class TestContagionTrustIntegration:
     """Verify that trust_engine.compute_trust applies contagion_penalty to beh_score."""
 
     def _agent(self, agent_id="agent-x"):
-        from core.models import AgentRegistration, AuthorizationRequest
+        from core.platform.models import AgentRegistration, AuthorizationRequest
         reg = AgentRegistration(
             agent_id=agent_id,
             name=agent_id,
@@ -228,7 +228,7 @@ class TestContagionTrustIntegration:
         return reg, req
 
     def test_contagion_penalty_reduces_behavioural_score(self):
-        from core import trust_engine
+        from core.enforcement import trust_engine
         reg, req = self._agent()
         bd_clean, _ = trust_engine.compute_trust(reg, req, {}, 0.0, 0.0, [])
         bd_tainted, flags_tainted = trust_engine.compute_trust(
@@ -239,7 +239,7 @@ class TestContagionTrustIntegration:
         assert any("CONTAGION" in f for f in flags_tainted)
 
     def test_contagion_flag_appears_in_attack_flags(self):
-        from core import trust_engine
+        from core.enforcement import trust_engine
         reg, req = self._agent()
         _, flags = trust_engine.compute_trust(
             reg, req, {}, 0.0, 15.0, ["CONTAGION:FROM_CHILD:bad-child"]
@@ -247,7 +247,7 @@ class TestContagionTrustIntegration:
         assert "CONTAGION:FROM_CHILD:bad-child" in flags
 
     def test_zero_contagion_no_effect(self):
-        from core import trust_engine
+        from core.enforcement import trust_engine
         reg, req = self._agent()
         bd_a, f_a = trust_engine.compute_trust(reg, req, {}, 0.0, 0.0, [])
         bd_b, f_b = trust_engine.compute_trust(reg, req, {}, 0.0, 0.0, None)

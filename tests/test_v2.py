@@ -18,11 +18,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from core.models import AgentRegistration, AuthorizationRequest, Decision, ResourceSensitivity
-from core.kill_chain import (
+from core.platform.models import AgentRegistration, AuthorizationRequest, Decision, ResourceSensitivity
+from core.detection.kill_chain import (
     analyze_kill_chain, BULK_READ_THRESHOLD, SWEEP_PREFIX_THRESHOLD,
 )
-from core.trust_engine import (
+from core.enforcement.trust_engine import (
     _detect_secrets,
     classify_resource_sensitivity,
     compute_trust,
@@ -751,7 +751,7 @@ class TestKnownWeaknessesAndGaps:
         # Cross-midnight windows (22:00-06:00) are now correctly handled.
         from datetime import datetime, timezone
         import unittest.mock as mock
-        from core.policy_engine import _is_time_active, Policy
+        from core.enforcement.policy_engine import _is_time_active, Policy
         p = Policy(
             id="test",
             description="test",
@@ -765,11 +765,11 @@ class TestKnownWeaknessesAndGaps:
             created_at=time.time(),
         )
         # 23:00 UTC — inside overnight window
-        with mock.patch("core.policy_engine.datetime") as dt_mock:
+        with mock.patch("core.enforcement.policy_engine.datetime") as dt_mock:
             dt_mock.now.return_value = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
             assert _is_time_active(p) is True
         # 14:00 UTC — outside overnight window
-        with mock.patch("core.policy_engine.datetime") as dt_mock:
+        with mock.patch("core.enforcement.policy_engine.datetime") as dt_mock:
             dt_mock.now.return_value = datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)
             assert _is_time_active(p) is False
 
@@ -838,7 +838,7 @@ class TestBugFixRegressions:
         # ATTACK: build up an agent baseline, delete the agent, re-register with the
         # same ID, and inherit the old velocity allowance (elevated burst headroom).
         # Before fix: delete_agent only removed from agents table, not agent_baselines.
-        from core import audit as _audit
+        from core.platform import audit as _audit
         uid = f"recycle_{uuid.uuid4().hex[:8]}"
         actual_tok = _reg(api_client, uid).json()["token"]
         # Build up a baseline (needs ≥ BASELINE_MIN_REQUESTS = 10 entries)
@@ -905,7 +905,7 @@ class TestBehavioralContracts:
                 for i in range(n)]
 
     def _perfect_breakdown(self):
-        from core.models import TrustBreakdown
+        from core.platform.models import TrustBreakdown
         return TrustBreakdown(
             identity_score=100, delegation_score=100, purpose_alignment_score=100,
             behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
@@ -915,31 +915,31 @@ class TestBehavioralContracts:
     # ── RPM contract ──────────────────────────────────────────────────────────
 
     def test_rpm_contract_fires_at_limit(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_rpm=5)
         flags = check_behavioral_contract(agent, "read", self._make_history(5))
         assert any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
 
     def test_rpm_contract_below_limit_no_flag(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_rpm=5)
         flags = check_behavioral_contract(agent, "read", self._make_history(4))
         assert not any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
 
     def test_rpm_contract_violation_causes_hard_deny(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_rpm=3)
         flags = check_behavioral_contract(agent, "read", self._make_history(10))
         assert make_decision(self._perfect_breakdown(), flags) == Decision.DENY
 
     def test_no_rpm_contract_no_flag(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_rpm=None)
         flags = check_behavioral_contract(agent, "read", self._make_history(100))
         assert not any("CONTRACT_RPM_EXCEEDED" in f for f in flags)
 
     def test_rpm_contract_flag_contains_count(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_rpm=5)
         flags = check_behavioral_contract(agent, "read", self._make_history(7))
         rpm_flags = [f for f in flags if "CONTRACT_RPM_EXCEEDED" in f]
@@ -949,14 +949,14 @@ class TestBehavioralContracts:
     # ── Consecutive action contract ────────────────────────────────────────────
 
     def test_consecutive_action_fires(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_consecutive=3)
         history = self._make_history(3, action="read")
         flags = check_behavioral_contract(agent, "read", history)
         assert any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
 
     def test_consecutive_action_mixed_history_no_fire(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_consecutive=3)
         history = [
             {"action": "read", "resource": "/r", "timestamp": time.time()},
@@ -967,13 +967,13 @@ class TestBehavioralContracts:
         assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
 
     def test_consecutive_action_below_limit_no_fire(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_consecutive=5)
         flags = check_behavioral_contract(agent, "read", self._make_history(4, action="read"))
         assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
 
     def test_no_consecutive_contract_no_flag(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(max_consecutive=None)
         flags = check_behavioral_contract(agent, "read", self._make_history(50, action="read"))
         assert not any("CONTRACT_CONSECUTIVE_ACTION" in f for f in flags)
@@ -981,19 +981,19 @@ class TestBehavioralContracts:
     # ── Time window contract ───────────────────────────────────────────────────
 
     def test_time_window_always_open_no_flag(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(time_windows=["00:00-23:59"])
         flags = check_behavioral_contract(agent, "read", [])
         assert not any("CONTRACT_OUTSIDE_TIME_WINDOW" in f for f in flags)
 
     def test_no_time_windows_no_flag(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(time_windows=None)
         flags = check_behavioral_contract(agent, "read", [])
         assert not any("CONTRACT_OUTSIDE_TIME_WINDOW" in f for f in flags)
 
     def test_time_window_flag_contains_utc_marker(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         from datetime import datetime, timezone
         now_hm = datetime.now(timezone.utc).strftime("%H:%M")
         if now_hm not in ("00:01", "00:02"):
@@ -1004,7 +1004,7 @@ class TestBehavioralContracts:
             assert "_UTC" in window_flags[0]
 
     def test_midnight_crossing_window_no_crash(self):
-        from core.trust_engine import check_behavioral_contract
+        from core.enforcement.trust_engine import check_behavioral_contract
         agent = self._contract_agent(time_windows=["22:00-06:00"])
         flags = check_behavioral_contract(agent, "read", [])
         assert isinstance(flags, list)  # must not raise
@@ -1053,7 +1053,7 @@ class TestKillChainDetection:
 
     def _seed_history(self, agent_id, entries):
         """Write request_history entries directly for deterministic testing."""
-        from core import audit as _audit
+        from core.platform import audit as _audit
         for action, resource in entries:
             _audit.log_request_history(agent_id, action, resource)
 
@@ -1160,7 +1160,7 @@ class TestKillChainDetection:
     # ── Detector 3: Sensitivity ramp ─────────────────────────────────────────
 
     def test_sensitivity_ramp_fires_on_first_critical_after_low_med(self):
-        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        from core.detection.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
         uid = f"kc_ramp_{uuid.uuid4().hex[:8]}"
         self._seed_history(uid, [
             ("read", f"/reports/q{i}.pdf") for i in range(SENSITIVITY_RAMP_MIN_HISTORY + 1)
@@ -1169,7 +1169,7 @@ class TestKillChainDetection:
         assert any("KILL_CHAIN:SENSITIVITY_RAMP" in f for f in flags)
 
     def test_sensitivity_ramp_no_fire_without_enough_history(self):
-        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        from core.detection.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
         uid = f"kc_ramp2_{uuid.uuid4().hex[:8]}"
         self._seed_history(uid, [
             ("read", f"/reports/q{i}.pdf") for i in range(SENSITIVITY_RAMP_MIN_HISTORY - 1)
@@ -1178,7 +1178,7 @@ class TestKillChainDetection:
         assert not any("KILL_CHAIN:SENSITIVITY_RAMP" in f for f in flags)
 
     def test_sensitivity_ramp_no_fire_if_already_hit_critical(self):
-        from core.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
+        from core.detection.kill_chain import SENSITIVITY_RAMP_MIN_HISTORY
         uid = f"kc_ramp3_{uuid.uuid4().hex[:8]}"
         self._seed_history(uid, [
             ("read", "/confidential/old_salary.xlsx"),  # CRITICAL — already in history
@@ -1250,8 +1250,8 @@ class TestKillChainDetection:
     # ── Make decision integration ──────────────────────────────────────────────
 
     def test_bulk_read_then_exfil_causes_deny_in_make_decision(self):
-        from core.trust_engine import make_decision
-        from core.models import TrustBreakdown
+        from core.enforcement.trust_engine import make_decision
+        from core.platform.models import TrustBreakdown
         # Perfect score — kill chain flag should still force DENY
         bd = TrustBreakdown(
             identity_score=100, delegation_score=100, purpose_alignment_score=100,
@@ -1262,8 +1262,8 @@ class TestKillChainDetection:
         assert make_decision(bd, flags) == Decision.DENY
 
     def test_read_then_delete_causes_deny_in_make_decision(self):
-        from core.trust_engine import make_decision
-        from core.models import TrustBreakdown
+        from core.enforcement.trust_engine import make_decision
+        from core.platform.models import TrustBreakdown
         bd = TrustBreakdown(
             identity_score=100, delegation_score=100, purpose_alignment_score=100,
             behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,
@@ -1273,8 +1273,8 @@ class TestKillChainDetection:
         assert make_decision(bd, flags) == Decision.DENY
 
     def test_sensitivity_ramp_causes_escalate_not_deny(self):
-        from core.trust_engine import make_decision
-        from core.models import TrustBreakdown
+        from core.enforcement.trust_engine import make_decision
+        from core.platform.models import TrustBreakdown
         bd = TrustBreakdown(
             identity_score=100, delegation_score=100, purpose_alignment_score=100,
             behavioral_score=100, resource_sensitivity=ResourceSensitivity.LOW,

@@ -17,9 +17,9 @@ import pytest
 from unittest.mock import patch
 import httpx
 
-from core.models import AgentRegistration, AuthorizationRequest, Decision
-from core.trust_engine import compute_trust, make_decision
-from core.policy_engine import _parse_policy_fallback, check_policies
+from core.platform.models import AgentRegistration, AuthorizationRequest, Decision
+from core.enforcement.trust_engine import compute_trust, make_decision
+from core.enforcement.policy_engine import _parse_policy_fallback, check_policies
 from agentgate.exceptions import AgentGateUnavailable
 from agentgate import AgentGate
 
@@ -107,7 +107,7 @@ def test_unauthorized_action_gets_denied():
 
 def test_policy_blocks_matching_resource():
     """A DENY policy matching action+resource must produce a PolicyMatch."""
-    from core.policy_engine import PolicyMatch
+    from core.enforcement.policy_engine import PolicyMatch
 
     parsed = _parse_policy_fallback("agents must never delete files in /confidential")
 

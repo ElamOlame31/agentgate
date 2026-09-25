@@ -163,7 +163,7 @@ def _scan_tool_response(mcp_result: dict) -> tuple[dict, bool, str, list]:
       - threat_categories: list of detected category strings
     """
     try:
-        from core.output_sanitizer import sanitize as _sanitize
+        from core.detection.output_sanitizer import sanitize as _sanitize
     except ImportError:
         # Not co-located with AgentGate core — skip scanning
         return mcp_result, False, "", []
