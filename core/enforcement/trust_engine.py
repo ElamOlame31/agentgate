@@ -12,6 +12,7 @@ from core.platform.models import (
 from core.detection.purpose_engine import compute_purpose_score
 from core.platform import audit
 from core.detection.kill_chain import analyze_kill_chain
+from core.detection.purpose_drift import detect_purpose_drift
 
 # Sensitivity thresholds: minimum trust score required to PERMIT
 SENSITIVITY_THRESHOLDS = {
@@ -360,6 +361,8 @@ def compute_trust(
 
     kc_flags = analyze_kill_chain(agent.agent_id, request.action, request.resource)
     all_flags.extend(kc_flags)
+
+    all_flags.extend(detect_purpose_drift(agent.agent_id))
 
     beh_score, beh_flags = score_behavioral(
         agent.agent_id, request.action,

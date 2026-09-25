@@ -16,7 +16,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import core.receipts.receipts.response_signing as rs
+import core.receipts.receipts.receipts.response_signing as rs
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
