@@ -74,7 +74,7 @@
 | Contract violation — rate limit | — | Deterministic: agent declares `max_requests_per_minute` at registration. Exceeding it → `CONTRACT_RPM_EXCEEDED` → hard DENY (no trust score involved). | Hard |
 | Contract violation — time window | — | Agent declares `allowed_time_windows` (UTC). Request outside window → `CONTRACT_OUTSIDE_TIME_WINDOW` → hard DENY. | Hard |
 | Contract violation — action repetition | — | Agent declares `max_consecutive_same_action`. Exceeded → `CONTRACT_CONSECUTIVE_ACTION` → hard DENY. | Hard |
-| Repetitive action (replay/amplification) | AML.T0050.001 | Same action > 5× in last 10 requests → `REPETITIVE_ACTION` flag → behavioral score penalty. | Scored |
+| Repetitive action (replay/amplification) | AML.T0050.001 | Covered by the per-agent velocity baseline (volume) and the resource hammering detector (one resource repeatedly). A previous `REPETITIVE_ACTION` check counted action *types* and flagged every working agent, so it was removed. | Scored |
 | Purpose misalignment (goal hijacking) | AML.T0049 | Purpose alignment score: embedding similarity of (action + resource) vs declared purpose (85% weight) + justification (15% weight, attacker-controlled weight capped). Sub-threshold → DENY. | Scored |
 | Audit log tampering | — | HMAC-SHA256 chain: each entry signed over the previous entry's hash. `/audit/verify` endpoint detects any gap or modification. | Detective |
 

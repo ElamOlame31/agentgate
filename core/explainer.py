@@ -4,6 +4,12 @@ from core.models import TrustBreakdown, Decision
 
 _client: anthropic.Anthropic | None = None
 
+# Applies to the on-demand prose path only. Nothing on the authorization path
+# waits on this.
+EXPLAINER_TIMEOUT_SECONDS: float = float(
+    os.getenv("AGENTGATE_EXPLAINER_TIMEOUT", "8")
+)
+
 
 def _explainer_enabled() -> bool:
     """Set AGENTGATE_EXPLAINER_ENABLED=false to use local fallback only (data residency)."""
@@ -23,6 +29,33 @@ def _sanitize(value: str, max_len: int = 200) -> str:
     return sanitized[:max_len]
 
 
+def local_explanation(
+    breakdown: TrustBreakdown,
+    decision: Decision,
+    flags: list[str],
+) -> str:
+    """Explain a decision from the decision itself — no network, no model.
+
+    This is what /authorize returns. It is derived entirely from the scores and
+    flags that produced the verdict, so it is available the instant the verdict
+    is, it cannot fail, and it says the same thing every time for the same
+    inputs — which is what an auditor comparing two records needs.
+    """
+    if decision == Decision.DENY:
+        return f"Access denied: {_weakest_score(breakdown, flags)}."
+    if decision == Decision.ESCALATE:
+        if flags:
+            return f"Flagged for review: {_humanize_flag(flags[0])} (trust score {breakdown.final_score}/100)."
+        return (
+            f"Flagged for review: trust score {breakdown.final_score}/100 is below "
+            f"the required {breakdown.threshold_required} — {_weakest_score(breakdown, [])}."
+        )
+    return (
+        f"Access granted: agent identity, purpose, and behavior all check out "
+        f"(score {breakdown.final_score}/100)."
+    )
+
+
 def generate_explanation(
     agent_name: str,
     action: str,
@@ -31,15 +64,15 @@ def generate_explanation(
     decision: Decision,
     flags: list[str],
 ) -> str:
+    """Prose explanation, on demand only.
+
+    This reaches a third-party model over the network, so it must never sit on
+    the authorization path: a slow or unreachable provider would delay every
+    agent action, and a fail-closed gate would block them. Call it when someone
+    is reading a decision — a dashboard, an audit review — not when one is made.
+    """
     if not _explainer_enabled():
-        # Cloud explainer disabled for data residency — use local fallback directly.
-        if decision == Decision.DENY:
-            return f"Access denied: {_weakest_score(breakdown, flags)}."
-        elif decision == Decision.ESCALATE:
-            if flags:
-                return f"Flagged for review: {_humanize_flag(flags[0])} (trust score {breakdown.final_score}/100)."
-            return f"Flagged for review: trust score {breakdown.final_score}/100 is below the required {breakdown.threshold_required} — {_weakest_score(breakdown, [])}."
-        return f"Access granted: agent identity, purpose, and behavior all check out (score {breakdown.final_score}/100)."
+        return local_explanation(breakdown, decision, flags)
 
     safe_name = _sanitize(agent_name, 128)
     safe_action = _sanitize(action, 128)
@@ -67,22 +100,13 @@ Write one crisp sentence explaining WHY this decision was made. Be specific abou
             model="claude-haiku-4-5-20251001",
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}],
+            # Bounded on purpose. The SDK's default allows several minutes,
+            # which is indistinguishable from a hang to whoever is waiting.
+            timeout=EXPLAINER_TIMEOUT_SECONDS,
         )
         return message.content[0].text.strip()
     except Exception:
-        # Fallback explanation without API
-        if decision == Decision.DENY:
-            weakest = _weakest_score(breakdown, flags)
-            return f"Access denied: {weakest}."
-        elif decision == Decision.ESCALATE:
-            if flags:
-                reason = _humanize_flag(flags[0])
-                return f"Flagged for review: {reason} (trust score {breakdown.final_score}/100)."
-            else:
-                weakest = _weakest_score(breakdown, [])
-                return f"Flagged for review: trust score {breakdown.final_score}/100 is below the required {breakdown.threshold_required} — {weakest}."
-        else:
-            return f"Access granted: agent identity, purpose, and behavior all check out (score {breakdown.final_score}/100)."
+        return local_explanation(breakdown, decision, flags)
 
 
 def _humanize_flag(flag: str) -> str:
@@ -103,8 +127,6 @@ def _humanize_flag(flag: str) -> str:
         return "the agent token does not match — possible identity spoofing"
     if "SCOPE_ESCALATION" in flag:
         return "the delegated agent is attempting to exceed its parent's permissions"
-    if "REPETITIVE_ACTION" in flag:
-        return "the agent is repeating the same action in a tight loop — suspicious pattern"
     return flag.lower().replace("_", " ")
 
 

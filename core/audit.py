@@ -271,6 +271,19 @@ def get_recent_decisions(limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_decision_by_id(request_id: str) -> dict | None:
+    """Return one recorded decision, or None if no entry carries that id."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM audit_log WHERE id=?", (request_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
 def get_decisions_in_range(from_ts: float, to_ts: float) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -567,11 +580,21 @@ def _ensure_baseline_table(conn):
     """)
 
 
+# A baseline describes an agent's rate across time, so it takes at most one
+# sample per velocity window. Sampling on every request meant a single burst
+# contributed sixty-five observations to its own "normal", and the ceiling
+# climbed faster than the burst did — the flag could never fire, and the guard
+# below that skips flagged observations never got the chance to do anything.
+BASELINE_SAMPLE_INTERVAL_SECONDS = 60.0
+
+
 def update_agent_baseline(agent_id: str, current_rpm: float):
     """
-    Exponential moving average of RPM per agent.
-    alpha=0.1 means the baseline updates slowly — 10 requests in before it shifts significantly.
-    This intentionally makes sudden spikes stand out against a stable baseline.
+    Exponential moving average of RPM per agent, sampled once per window.
+
+    alpha is deliberately small so the baseline moves slowly and a genuine spike
+    stands out against it. That only holds if observations are spread over time:
+    see BASELINE_SAMPLE_INTERVAL_SECONDS.
     """
     conn = sqlite3.connect(DB_PATH)
     _ensure_baseline_table(conn)
@@ -581,6 +604,9 @@ def update_agent_baseline(agent_id: str, current_rpm: float):
     ).fetchone()
 
     now = time.time()
+    if row is not None and (now - row["last_updated"]) < BASELINE_SAMPLE_INTERVAL_SECONDS:
+        conn.close()
+        return
     if row is None:
         conn.execute(
             "INSERT INTO agent_baselines VALUES (?,?,?,?,?,?,?)",

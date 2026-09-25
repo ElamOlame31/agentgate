@@ -711,12 +711,23 @@ class TestBehavioralScore:
         score, flags = score_behavioral(unique_id, "read")
         assert any("CRITICAL_VELOCITY" in f for f in flags)
 
-    def test_repetitive_action_flagged(self):
+    def test_repeated_work_is_not_penalised(self):
+        """
+        Doing the same kind of work repeatedly is what an agent does.
+
+        This replaces a REPETITIVE_ACTION check that cost 25 points once the
+        same action appeared more than five times in the last ten requests. It
+        flagged every legitimate agent — a summarizer reading twenty reports
+        tripped it on the sixth — and never cleared, leaving healthy agents in
+        permanent ESCALATE. Volume is the velocity baseline's job; a single
+        resource hammered is the resource hammering detector's.
+        """
         unique_id = f"repeat_{uuid.uuid4().hex[:8]}"
-        for _ in range(7):
-            audit.log_request_history(unique_id, "delete", "/reports/file.pdf")
-        score, flags = score_behavioral(unique_id, "delete")
-        assert any("REPETITIVE_ACTION" in f for f in flags)
+        for i in range(12):
+            audit.log_request_history(unique_id, "read", f"/reports/q{i}.pdf")
+        score, flags = score_behavioral(unique_id, "read")
+        assert not any("REPETITIVE" in f for f in flags), flags
+        assert score == 100.0, f"clean repeated work should not lose points, got {score}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1086,12 +1097,44 @@ class TestAudit:
         history = audit.get_agent_request_history(uid, window_seconds=60.0)
         assert all(h["timestamp"] > time.time() - 60 for h in history)
 
-    def test_update_and_get_baseline(self):
+    def test_baseline_takes_one_sample_per_window(self):
+        """
+        A baseline measures an agent's rate across time, so it samples at most
+        once per window.
+
+        Sampling on every request is what let a burst teach the system that the
+        burst was normal: sixty-five calls inside one minute contributed
+        sixty-five observations, the ceiling (avg x 2.5) climbed faster than the
+        burst, and CRITICAL_VELOCITY could never fire. The guard that skips
+        already-flagged observations never got the chance to act, because the
+        flag it depended on was the thing being prevented.
+        """
         uid = f"base_{uuid.uuid4().hex[:8]}"
         audit.update_agent_baseline(uid, 5.0)
-        audit.update_agent_baseline(uid, 10.0)
+        audit.update_agent_baseline(uid, 10.0)   # same window — must be ignored
         b = audit.get_agent_baseline(uid)
         assert b is not None
+        assert b["total_requests"] == 1, "a second sample in the same window was accepted"
+        assert b["peak_rpm"] == 5.0, "a same-window observation moved the peak"
+
+    def test_baseline_samples_again_in_the_next_window(self):
+        """Rate limiting must not freeze the baseline — it still learns over time."""
+        import sqlite3
+
+        uid = f"base_{uuid.uuid4().hex[:8]}"
+        audit.update_agent_baseline(uid, 5.0)
+
+        # Age the row past the sampling interval rather than waiting for it.
+        conn = sqlite3.connect(audit.DB_PATH)
+        conn.execute(
+            "UPDATE agent_baselines SET last_updated=? WHERE agent_id=?",
+            (time.time() - audit.BASELINE_SAMPLE_INTERVAL_SECONDS - 1, uid),
+        )
+        conn.commit()
+        conn.close()
+
+        audit.update_agent_baseline(uid, 10.0)
+        b = audit.get_agent_baseline(uid)
         assert b["total_requests"] == 2
         assert b["peak_rpm"] == 10.0
 

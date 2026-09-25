@@ -250,19 +250,31 @@ def check_behavioral_contract(
     return flags
 
 
-def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
+def score_behavioral(
+    agent_id: str,
+    action: str,
+    declared_max_rpm: int | None = None,
+) -> tuple[float, list[str]]:
     flags = []
     score = 100.0
 
     history = audit.get_agent_request_history(agent_id, window_seconds=60.0)
     rpm = len(history)
 
+    # An agent that declared its rate at registration is held to that figure
+    # until it has a baseline, not to a global default that knows nothing about
+    # it. Without this a legitimate high-throughput agent is flagged for doing
+    # exactly what it said it would do — and the declaration already binds it,
+    # since exceeding it is a hard CONTRACT_RPM_EXCEEDED denial.
+    cold_start_ceiling = max(GLOBAL_MAX_RPM, declared_max_rpm or 0)
+
     # Use per-agent baseline if the agent has enough history; fall back to global threshold
     baseline = audit.get_agent_baseline(agent_id)
     if baseline and baseline["total_requests"] >= BASELINE_MIN_REQUESTS:
         agent_avg_rpm = baseline["avg_rpm"]
-        # Effective ceiling: agent's own average * spike multiplier, floor at GLOBAL_MAX_RPM
-        effective_max = max(GLOBAL_MAX_RPM, agent_avg_rpm * BASELINE_SPIKE_MULTIPLIER)
+        # Effective ceiling: agent's own average * spike multiplier, floored at
+        # whichever is higher — the global default or what the agent declared.
+        effective_max = max(cold_start_ceiling, agent_avg_rpm * BASELINE_SPIKE_MULTIPLIER)
         anomaly_ratio = rpm / max(agent_avg_rpm, 0.1)
 
         if rpm > effective_max:
@@ -274,21 +286,29 @@ def score_behavioral(agent_id: str, action: str) -> tuple[float, list[str]]:
             else:
                 flags.append(f"HIGH_VELOCITY:{rpm}_RPM|BASELINE:{round(agent_avg_rpm,1)}")
     else:
-        # Cold start: use global threshold
-        if rpm > GLOBAL_MAX_RPM:
-            excess = rpm - GLOBAL_MAX_RPM
+        # Cold start: hold the agent to what it declared, or to the global
+        # default when it declared nothing.
+        if rpm > cold_start_ceiling:
+            excess = rpm - cold_start_ceiling
             penalty = min(90.0, excess * 5.0)
             score -= penalty
-            if rpm > GLOBAL_MAX_RPM * 2:
+            if rpm > cold_start_ceiling * 2:
                 flags.append(f"CRITICAL_VELOCITY:{rpm}_RPM")
             else:
                 flags.append(f"HIGH_VELOCITY:{rpm}_RPM")
 
-    # Check for repeated identical actions (replay-style behavior)
-    recent_actions = [h["action"] for h in history[:10]]
-    if recent_actions.count(action) > 5:
-        flags.append(f"REPETITIVE_ACTION:{action}")
-        score -= 25.0
+    # There was a REPETITIVE_ACTION penalty here: more than five of the same
+    # action type in the last ten requests cost 25 points. It fired on every
+    # working agent. A summarizer reads, a support bot looks up, a coding agent
+    # opens files — repetition of one action type is what an agent's normal day
+    # looks like, so the flag raised on the sixth call and never cleared, and
+    # the agent sat in permanent ESCALATE. A control with that false-positive
+    # rate is not a control: it teaches operators to wave escalations through.
+    #
+    # Nothing is lost by removing it. Volume is already covered by the velocity
+    # baseline, and depth — one resource hammered — is what the resource
+    # hammering detector measures, on the resource path rather than the action
+    # type, which is the distinction this check never made.
 
     # Only update baseline with clean observations — prevents gradual baseline poisoning
     if not any("VELOCITY" in f for f in flags):
@@ -341,7 +361,10 @@ def compute_trust(
     kc_flags = analyze_kill_chain(agent.agent_id, request.action, request.resource)
     all_flags.extend(kc_flags)
 
-    beh_score, beh_flags = score_behavioral(agent.agent_id, request.action)
+    beh_score, beh_flags = score_behavioral(
+        agent.agent_id, request.action,
+        getattr(agent, "max_requests_per_minute", None),
+    )
     # Penalize behavioral score when a prior injection scan flagged this agent
     if injection_risk > 0.5:
         penalty = min(50.0, (injection_risk - 0.5) * 100.0)

@@ -76,7 +76,7 @@ async def require_admin_key(request: Request):
 from core.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
     ContentScanRequest, ContentScanResponse, OutputSanitizeRequest,
-    ReceiptRedeemRequest,
+    ReceiptRedeemRequest, TrustBreakdown,
 )
 from core import audit, trust_engine
 from core.audit import hash_token
@@ -85,7 +85,7 @@ from core.token import (
     is_jwt_format, is_jti,
 )
 import jwt as _jwt
-from core.explainer import generate_explanation
+from core.explainer import generate_explanation, local_explanation
 from core.policy_engine import (
     create_policy, get_all_policies, delete_policy,
     check_policies, Policy, init_policy_table
@@ -887,10 +887,10 @@ async def authorize(request: Request, body: AuthorizationRequest):
         contagion_penalty, contagion_flags,
     )
     decision = trust_engine.make_decision(breakdown, flags)
-    explanation = generate_explanation(
-        agent.name, body.action, body.resource,
-        breakdown, decision, flags
-    )
+    # Derived locally from the scores that produced the verdict. The prose
+    # version reaches a third-party model, which has no business on the path an
+    # agent waits on — see GET /decisions/{id}/explain.
+    explanation = local_explanation(breakdown, decision, flags)
 
     # ── Human-in-the-loop: pause ESCALATE for manual review ───────────────
     if decision == Decision.ESCALATE and agent.requires_human_approval:
@@ -1227,6 +1227,40 @@ async def get_decision(request: Request, decision_id: str):
     if a is None:
         raise HTTPException(status_code=404, detail="Decision not found")
     return a.to_dict()
+
+
+@app.get("/decisions/{decision_id}/explain", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def explain_decision(request: Request, decision_id: str):
+    """
+    Prose explanation of a recorded decision, generated when asked for.
+
+    The decision itself already carries a deterministic explanation; this is the
+    readable version for a human reviewing the trail. It is a separate call
+    because producing it means reaching a language model over the network, and
+    nothing an agent waits on should depend on that being fast or available.
+    """
+    entry = audit.get_decision_by_id(decision_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    record = json.loads(entry["full_json"])
+    breakdown = TrustBreakdown(**record["trust_breakdown"])
+    prose = await asyncio.to_thread(
+        generate_explanation,
+        record.get("agent_id", ""),
+        record.get("action", ""),
+        record.get("resource", ""),
+        breakdown,
+        Decision(record["decision"]),
+        record.get("attack_flags", []),
+    )
+    return {
+        "request_id": decision_id,
+        "decision": record["decision"],
+        "explanation": record.get("explanation", ""),
+        "prose": prose,
+    }
 
 
 @app.post("/decisions/{decision_id}/approve", dependencies=[Depends(require_admin_key)])
