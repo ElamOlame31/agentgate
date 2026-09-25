@@ -14,6 +14,8 @@ Flags are tiered:
   KILL_CHAIN:CROSS_SESSION:BULK_READ_*     hard DENY — slow APT-style bulk-read then exfil/destroy (24h)
   KILL_CHAIN:CROSS_SESSION:READ_THEN_DELETE hard DENY — read+delete same resource across sessions
   KILL_CHAIN:CROSS_SESSION:SENSITIVITY_RAMP ESCALATE — 4-hour progressive sensitivity ramp
+  KILL_CHAIN:RESOURCE_HAMMERING            ESCALATE  — repeated access to the same resource (5-min)
+  KILL_CHAIN:RESOURCE_HAMMERING:HARD       hard DENY — extreme repeat access to the same resource (5-min)
 """
 
 import time
@@ -22,6 +24,7 @@ from urllib.parse import unquote
 from core.platform import audit
 from core.platform.models import ResourceSensitivity, EXFILTRATION_ACTIONS as _EXFIL_ACTIONS
 from core.detection.lateral_movement import detect_lateral_movement
+from core.detection.resource_hammering import detect_resource_hammering
 
 # Maximum query window — one DB round-trip per authorize call; filter in-process per detector.
 # Cross-session history survives server restarts because request_history is SQLite-backed.
@@ -158,7 +161,12 @@ def analyze_kill_chain(agent_id: str, action: str, resource: str) -> list[str]:
     if len(prefixes) >= SWEEP_PREFIX_THRESHOLD:
         flags.append(f"KILL_CHAIN:DIRECTORY_SWEEP:{len(prefixes)}_prefixes")
 
-    # ── Detectors 5 & 6: Lateral movement (credential harvest + namespace sweep)
+    # ── Lateral movement: credential harvest and namespace sweep ─────────────
     flags.extend(detect_lateral_movement(action, resource, history))
+
+    # ── Resource hammering: depth rather than breadth ─────────────────────────
+    # One resource struck repeatedly, which the sweep and bulk-read detectors
+    # cannot see because they measure how wide an agent reaches, not how hard.
+    flags.extend(detect_resource_hammering(action, resource, history))
 
     return flags

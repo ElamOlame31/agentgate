@@ -81,6 +81,9 @@ Market analysis completed; recorded privately.
 ## 2026-06-25 — Resource hammering detector (kill chain Detector 5)
 
 **Branch / PR:** `daily/2026-06-25-resource-hammering-detector` · https://github.com/ElamOlame31/agentgate-public/pull/15
+## 2026-06-25 — Resource hammering detector (kill chain Detector 5)
+
+**Branch / PR:** `daily/2026-06-25-resource-hammering-detector` · _(PR link below)_
 
 ### What changed
 
@@ -144,6 +147,31 @@ window), consistent with the treatment of `CRITICAL_VELOCITY` and
 - `TestDenyLevel` (7), `TestWindowFiltering` (8), `TestResourceIsolation` (6)
 - `TestActionVariance` (4), `TestReturnType` (6), `TestFlagFormat` (6)
 - `TestConstants` (8), `TestCurrentRequestCounted` (4), `TestEdgeCases` (8)
+- `TestNormalize` (10) — simple path, uppercase, percent-encoded, space-encoded,
+  trailing slash, `..` normalization, double slash, mixed case + encoding, root, no leading slash
+- `TestBelowThreshold` (8) — empty history, 1 prior, 5 prior, 6 prior, all different
+  resources, all outside window, mixed resources each below threshold, mixed old+new
+- `TestEscalateLevel` (8) — exact threshold, one above, contains resource, contains count,
+  contains window label, starts with `KILL_CHAIN:`, mid-range, just below deny
+- `TestDenyLevel` (7) — exact deny threshold, one above, prefix check, contains resource,
+  contains count, extreme count, contains window label
+- `TestWindowFiltering` (8) — in-window count, outside-window excluded, mixed partial,
+  mixed reaches escalate, well within window, deny level in window, deny blocked by window,
+  zero-second entry counted
+- `TestResourceIsolation` (6) — different resource not counted, case-insensitive match,
+  encoded vs decoded match, prefix-match not applied, similar-but-distinct paths, two
+  independent hammered resources
+- `TestActionVariance` (4) — all reads, all writes, mixed actions, current action type irrelevant
+- `TestReturnType` (6) — list on clean, list on escalate, list on deny, never None,
+  at most one flag, all strings
+- `TestFlagFormat` (6) — escalate prefix, deny prefix, count accuracy (escalate),
+  count accuracy (deny), original resource preserved, `_in_5min:` separator
+- `TestConstants` (8) — positive integers, deny > escalate, window positive, reasonable
+  ranges, matches 5 minutes, deny ≥ 2× escalate
+- `TestCurrentRequestCounted` (4) — prior+1 at escalate threshold, one short no flag,
+  prior+1 at deny threshold, one short of deny
+- `TestEdgeCases` (8) — encoded slash, root resource, very long path, resource with spaces,
+  missing resource key, empty string resource, 5000-entry performance, zero history adds one
 
 ### Test results
 
