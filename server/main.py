@@ -104,6 +104,7 @@ from core.receipts import response_signing as _response_signing
 from core.receipts import action_ref as _action_ref
 from core.receipts import receipts as _receipts
 from core.enforcement import labels as _labels
+from core.enforcement import fail_mode as _fail_mode
 from core.receipts import receipt_signing as _receipt_signing
 
 # Persistent agent registry (loaded from SQLite on startup)
@@ -310,10 +311,12 @@ async def _security_headers(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
+    from core import fail_mode as _fm
     return {
         "status": "ok",
         "alerts": alert_status(),
         "siem": siem_status() or "not configured",
+        "fail_mode": "closed" if _fm.is_fail_closed() else "open",
     }
 
 
@@ -915,38 +918,80 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Trust contagion: apply penalty if a delegation neighbour is quarantined
     contagion_penalty, contagion_flags = _contagion.get_contagion_penalty(body.agent_id)
 
-    # compute_trust calls SQLite (request history, baselines) — run in thread pool
-    breakdown, flags = await asyncio.to_thread(
-        trust_engine.compute_trust, agent, body, _agents, injection_risk,
-        contagion_penalty, contagion_flags,
-    )
-    # ── Information flow: may this data reach this destination? ───────────
-    # Deliberately outside the trust score. A score is a judgement that can be
-    # argued with; a lattice violation is a fact. Mixing them would let a high
-    # score buy its way past a flow that must not happen, which is exactly the
-    # hole a weighted average leaves open.
-    flow_state = await asyncio.to_thread(
-        _labels.compute_flow_state,
-        body.agent_id,
-        agent.processes_external_content,
-        injection_risk >= 0.5,
-    )
-    flow_flags = _labels.check_flow(
-        flow_state, body.action, body.resource,
-        body.arguments, agent.allowed_destinations,
-    )
-    if flow_flags:
-        flags = list(flags) + flow_flags
-        decision = Decision.DENY
-        explanation = (
-            f"Blocked: {_labels.explain_violation(flow_flags, flow_state)}."
+    # The whole decision path is wrapped. An unexpected exception here must not
+    # reach the caller as a 500: that is an outcome with no record, and a gate
+    # whose failures are invisible is worse than one that denies. Failing closed
+    # produces a DENY that is sealed and logged like any other decision.
+    # AGENTGATE_FAIL_MODE=open re-raises instead, for development only.
+    try:
+        # compute_trust calls SQLite (request history, baselines) — run in thread pool
+        breakdown, flags = await asyncio.to_thread(
+            trust_engine.compute_trust, agent, body, _agents, injection_risk,
+            contagion_penalty, contagion_flags,
         )
-    else:
-        decision = trust_engine.make_decision(breakdown, flags)
-        # Derived locally from the scores that produced the verdict. The prose
-        # version reaches a third-party model, which has no business on the path
-        # an agent waits on — see GET /decisions/{id}/explain.
-        explanation = local_explanation(breakdown, decision, flags)
+        # ── Information flow: may this data reach this destination? ───────────
+        # Deliberately outside the trust score. A score is a judgement that can be
+        # argued with; a lattice violation is a fact. Mixing them would let a high
+        # score buy its way past a flow that must not happen, which is exactly the
+        # hole a weighted average leaves open.
+        flow_state = await asyncio.to_thread(
+            _labels.compute_flow_state,
+            body.agent_id,
+            agent.processes_external_content,
+            injection_risk >= 0.5,
+        )
+        flow_flags = _labels.check_flow(
+            flow_state, body.action, body.resource,
+            body.arguments, agent.allowed_destinations,
+        )
+        if flow_flags:
+            flags = list(flags) + flow_flags
+            decision = Decision.DENY
+            explanation = (
+                f"Blocked: {_labels.explain_violation(flow_flags, flow_state)}."
+            )
+        else:
+            decision = trust_engine.make_decision(breakdown, flags)
+            # Derived locally from the scores that produced the verdict. The prose
+            # version reaches a third-party model, which has no business on the path
+            # an agent waits on — see GET /decisions/{id}/explain.
+            explanation = local_explanation(breakdown, decision, flags)
+    except Exception as pipeline_exc:
+        if not _fail_mode.is_fail_closed():
+            raise
+        # Log the exception type only. A stack trace in the response would hand a
+        # caller the internal structure of the thing that just failed to judge it.
+        print(
+            f"[AgentGate] FAIL_CLOSED — pipeline raised {type(pipeline_exc).__name__} "
+            f"for {body.agent_id} {body.action} {body.resource}",
+            flush=True,
+        )
+        sensitivity = trust_engine.classify_resource_sensitivity(body.resource, body.action)
+        response = AuthorizationResponse(
+            request_id=body.request_id,
+            agent_id=body.agent_id,
+            action=body.action,
+            resource=body.resource,
+            decision=Decision.DENY,
+            trust_breakdown=TrustBreakdown(
+                identity_score=0, delegation_score=0,
+                purpose_alignment_score=0, behavioral_score=0,
+                resource_sensitivity=sensitivity, final_score=0,
+                threshold_required=trust_engine.SENSITIVITY_THRESHOLDS[sensitivity],
+            ),
+            explanation=_fail_mode.FAIL_CLOSED_EXPLANATION,
+            attack_flags=[_fail_mode.FAIL_CLOSED_FLAG],
+        )
+        # Sealed and written synchronously, like every other decision: a refusal
+        # the caller cannot verify is not much better than no refusal.
+        _stamp_response(response, body.arguments)
+        audit.log_decision(response, False)
+        await manager.broadcast({"type": "decision", "data": response.model_dump()})
+        fire_alert(
+            "DENY", body.agent_id, body.action, body.resource,
+            _fail_mode.FAIL_CLOSED_EXPLANATION, [_fail_mode.FAIL_CLOSED_FLAG], 0,
+        )
+        return response
 
     # ── Human-in-the-loop: pause ESCALATE for manual review ───────────────
     if decision == Decision.ESCALATE and agent.requires_human_approval:

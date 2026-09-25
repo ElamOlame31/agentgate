@@ -593,6 +593,9 @@ Market analysis completed; recorded privately.
 ## 2026-06-16 — Explicit fail-closed behavior for the authorization pipeline
 
 **Branch / PR:** `daily/2026-06-16-fail-closed-behavior` · https://github.com/ElamOlame31/agentgate-public/pull/6
+## 2026-06-16 — Explicit fail-closed behavior for the authorization pipeline
+
+**Branch:** `daily/2026-06-16-fail-closed-behavior`
 
 ### What changed
 
@@ -616,6 +619,8 @@ raises an unexpected exception inside `/authorize`:
 
 The trust-scoring block in `/authorize` (`compute_trust` → `make_decision`
 → `generate_explanation`) is now wrapped in `try/except Exception`.
+The trust-scoring block in `/authorize` (the `asyncio.to_thread(compute_trust...)`
+call through `generate_explanation`) is now wrapped in `try/except Exception`.
 On any unhandled exception:
 
 - If `is_fail_closed()` → return `DENY` with `FAIL_CLOSED` flag, queue an
@@ -624,6 +629,9 @@ On any unhandled exception:
   caller.
 - If `is_fail_closed()` is `False` (only when `AGENTGATE_FAIL_MODE=open`) →
   re-raise so FastAPI returns HTTP 500 (development/debug mode only).
+  class name is logged server-side; nothing internal is returned to the caller.
+- If `is_fail_closed()` is `False` (only when `AGENTGATE_FAIL_MODE=open`) →
+  re-raise so FastAPI returns HTTP 500 (development/debug mode).
 
 `/healthz` now returns `"fail_mode": "closed"` or `"fail_mode": "open"` so
 operators can verify the setting without inspecting env vars.

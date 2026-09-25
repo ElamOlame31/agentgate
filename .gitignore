@@ -14,3 +14,17 @@ python
 *.log
 PROGRESS_LOG.tex
 sdk_test.py
+
+# Business and outreach material — contains third-party contact details.
+# Must never reach a public repository.
+FEEDBACK_LOG.md
+outreach_targets.csv
+MARKET_RESEARCH.md
+
+# Pitch demo assets: vendored node_modules, recorded video, generated frames.
+demo/_shots/node_modules/
+demo/_shots/video/
+demo/_shots/auto/
+demo/vendor/
+demo_recording/
+*.webm
