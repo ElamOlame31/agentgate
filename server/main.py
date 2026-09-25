@@ -76,6 +76,7 @@ async def require_admin_key(request: Request):
 from core.models import (
     AgentRegistration, AuthorizationRequest, AuthorizationResponse, Decision,
     ContentScanRequest, ContentScanResponse, OutputSanitizeRequest,
+    ReceiptRedeemRequest,
 )
 from core import audit, trust_engine
 from core.audit import hash_token
@@ -99,6 +100,8 @@ from core import quarantine as _quarantine
 from core import contagion as _contagion
 from core.delegation import validate_delegation, chain_summary, MAX_DELEGATION_DEPTH
 from core import response_signing as _response_signing
+from core import action_ref as _action_ref
+from core import receipts as _receipts
 
 # Persistent agent registry (loaded from SQLite on startup)
 _agents: dict[str, AgentRegistration] = {}
@@ -109,13 +112,39 @@ _recent_scans: dict[str, dict] = {}
 _SCAN_TTL = 120.0  # seconds before a scan result expires
 
 
-def _stamp_response(response: AuthorizationResponse) -> None:
-    """Add a response MAC nonce+sig in-place. Called before every /authorize return."""
+def _stamp_response(
+    response: AuthorizationResponse,
+    arguments: dict | None = None,
+) -> None:
+    """Seal the response in place: operation reference first, then nonce and MAC.
+
+    Called on every /authorize return path before the audit write, so the sealed
+    values are what lands in the log rather than a stripped copy of it.
+
+    A descriptor that cannot be canonicalized leaves action_ref unset. The
+    response is still signed and still authoritative about the verdict; it
+    simply carries no dispatch-time binding. A caller that requires binding
+    should treat an absent action_ref as a refusal rather than a pass.
+    """
+    ref = ""
+    try:
+        ref = _action_ref.compute_action_ref(
+            agent_id=response.agent_id,
+            action=response.action,
+            resource=response.resource,
+            arguments=arguments,
+        )
+        response.action_ref = ref
+        response.normalized_resource = _action_ref.normalize_resource(response.resource)
+    except _action_ref.ActionRefError as exc:
+        print(f"[AgentGate] action_ref not computed: {exc}", flush=True)
+
     nonce, sig = _response_signing.sign_response(
         response.request_id,
         response.agent_id,
         response.decision.value,
         response.timestamp,
+        ref,
     )
     response.response_nonce = nonce
     response.response_sig = sig
@@ -450,6 +479,52 @@ async def signing_info():
     return _response_signing.get_signing_info()
 
 
+@app.post("/receipts/redeem", dependencies=[Depends(require_api_key)])
+@limiter.limit("200/minute")
+async def redeem_receipt(request: Request, body: ReceiptRedeemRequest):
+    """
+    Spend an authorization receipt, once, immediately before the action runs.
+
+    /authorize says an operation may proceed. This says it is proceeding now.
+    The two together are what let a reviewer distinguish an action that was
+    merely allowed from one that was taken — and stop a receipt being presented
+    a second time inside its freshness window.
+
+    409 on refusal rather than 403: the receipt may well have been valid, it is
+    the attempt to spend it that conflicts with what already happened. The
+    reason is returned so the caller can tell a replay from a forgery.
+
+    A caller that gets anything other than 200 must not execute.
+    """
+    redeemed, reason = _receipts.redeem(
+        nonce=body.nonce,
+        mac=body.mac,
+        request_id=body.request_id,
+        agent_id=body.agent_id,
+        decision=body.decision,
+        timestamp=body.timestamp,
+        action_ref=body.action_ref,
+    )
+    if not redeemed:
+        await manager.broadcast({
+            "type": "receipt_refused",
+            "data": {
+                "agent_id": body.agent_id,
+                "request_id": body.request_id,
+                "action_ref": body.action_ref,
+                "reason": reason,
+            },
+        })
+        raise HTTPException(status_code=409, detail=reason)
+
+    return {
+        "redeemed": True,
+        "request_id": body.request_id,
+        "action_ref": body.action_ref,
+        "redeemed_at": time.time(),
+    }
+
+
 @app.post("/agents/{agent_id}/revoke", dependencies=[Depends(require_api_key)])
 @limiter.limit("20/minute")
 async def revoke_agent(request: Request, agent_id: str):
@@ -617,14 +692,9 @@ def _normalize_resource(resource: str) -> str:
       4. Guarantee a leading /
     """
     # Double-decode to catch %252e%252e → %2e%2e → ..
-    decoded = urllib.parse.unquote(urllib.parse.unquote(resource))
-    # Strip null bytes
-    decoded = decoded.replace("\x00", "")
-    # Normalize (resolves .., //, ./ etc.) — posixpath is OS-independent
-    normalized = posixpath.normpath(decoded)
-    if not normalized.startswith("/"):
-        normalized = "/" + normalized
-    return normalized
+    # Delegates to core.action_ref so the value hashed into action_ref and the
+    # value policy is evaluated against can never drift apart.
+    return _action_ref.normalize_resource(resource)
 
 
 @app.post("/authorize", response_model=AuthorizationResponse, dependencies=[Depends(require_api_key)])
@@ -652,7 +722,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # Unknown agent → deny immediately
     if body.agent_id not in _agents:
         response = _build_unknown_agent_response(body)
-        _stamp_response(response)
+        _stamp_response(response, body.arguments)
         audit.log_decision(response, False)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         return response
@@ -712,7 +782,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             ),
             attack_flags=["QUARANTINED", f"QUARANTINE_TRIGGER:{q_record.trigger}"],
         )
-        _stamp_response(response)
+        _stamp_response(response, body.arguments)
         audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
@@ -725,7 +795,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
     policy_match = check_policies(body.agent_id, body.action, body.resource)
     if policy_match.matched:
         response = _build_policy_blocked_response(body, agent, policy_match)
-        _stamp_response(response)
+        _stamp_response(response, body.arguments)
         audit.log_decision(response)
         await manager.broadcast({"type": "decision", "data": response.model_dump()})
         fire_alert(
@@ -786,7 +856,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
                 attack_flags=["INJECTION_DETECTED", f"INJECTION_CONFIDENCE:{round(scan_result.confidence * 100)}%"],
                 injection_score=scan_result.confidence,
             )
-            _stamp_response(response)
+            _stamp_response(response, body.arguments)
             audit.log_decision(response)
             await manager.broadcast({"type": "decision", "data": response.model_dump()})
             fire_alert(
@@ -849,7 +919,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
             attack_flags=flags,
             injection_score=injection_risk if injection_risk > 0 else None,
         )
-        _stamp_response(response)
+        _stamp_response(response, body.arguments)
         audit.log_decision(response)
         return response
 
@@ -864,7 +934,7 @@ async def authorize(request: Request, body: AuthorizationRequest):
         attack_flags=flags,
         injection_score=injection_risk if injection_risk > 0 else None,
     )
-    _stamp_response(response)
+    _stamp_response(response, body.arguments)
 
     # ── Quarantine triggers ────────────────────────────────────────────────
     if decision == Decision.DENY:

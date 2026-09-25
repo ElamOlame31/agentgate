@@ -58,12 +58,32 @@ class AuthorizationRequest(BaseModel):
     request_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
     content: Optional[str] = Field(default=None, max_length=20_000)
+    # Material arguments of the call — the amount, the recipient, the body.
+    # Whatever is left out is not bound by action_ref and may therefore
+    # change between the decision and the dispatch without detection.
+    arguments: Optional[dict] = None
 
 
 class ContentScanRequest(BaseModel):
     agent_id: str
     content: str = Field(max_length=100_000)
     declared_purpose: Optional[str] = ""
+
+
+class ReceiptRedeemRequest(BaseModel):
+    """A receipt handed back at dispatch, to be spent before the action runs.
+
+    Every field comes straight from the /authorize response. The caller does
+    not construct any of it, which is what makes the redemption meaningful:
+    it can only present what the server issued.
+    """
+    nonce: str = Field(max_length=128)
+    mac: str = Field(max_length=128)
+    request_id: str = Field(max_length=128)
+    agent_id: str = Field(max_length=128)
+    decision: str = Field(max_length=32)
+    timestamp: float
+    action_ref: str = Field(default="", max_length=128)
 
 
 class OutputSanitizeRequest(BaseModel):
@@ -105,3 +125,9 @@ class AuthorizationResponse(BaseModel):
     # the response originated from this instance and has not been replayed.
     response_nonce: Optional[str] = None
     response_sig: Optional[str] = None
+    # Content address of the authorized operation. The caller recomputes it
+    # at dispatch and refuses to execute on a mismatch.
+    action_ref: Optional[str] = None
+    # Resource in the normalized form action_ref was computed over, so the
+    # caller can reproduce the digest without reimplementing normalization.
+    normalized_resource: Optional[str] = None

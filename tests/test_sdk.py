@@ -61,9 +61,43 @@ def _register_handler(request):
     return _json_response({"token": FAKE_TOKEN, "agent_id": FAKE_AGENT_ID})
 
 
+def _sealed(request, decision: str) -> dict:
+    """Build the sealed part of a response the way the real server does.
+
+    A bare verdict is no longer a complete answer: guard() checks that the
+    decision names the operation it is about to run, so a mock that omits
+    action_ref would be testing against a server that no longer exists.
+    """
+    import time as _time
+    from agentgate import action_ref as _ref
+
+    body = json.loads(request.content or b"{}")
+    ref = _ref.compute_action_ref(
+        agent_id=body.get("agent_id", ""),
+        action=body.get("action", ""),
+        resource=body.get("resource", ""),
+        arguments=body.get("arguments"),
+    )
+    return {
+        "request_id": body.get("request_id", str(uuid.uuid4())),
+        "agent_id": body.get("agent_id", ""),
+        "action": body.get("action", ""),
+        "resource": body.get("resource", ""),
+        "decision": decision,
+        "timestamp": _time.time(),
+        "action_ref": ref,
+        "response_nonce": str(uuid.uuid4()),
+        "response_sig": "mock-signature",
+    }
+
+
+def _redeem_handler(request):
+    return _json_response({"redeemed": True})
+
+
 def _permit_handler(request):
     return _json_response({
-        "decision": "PERMIT",
+        **_sealed(request, "PERMIT"),
         "explanation": "Within scope",
         "trust_breakdown": {},
         "attack_flags": [],
@@ -143,6 +177,7 @@ def sync_routes():
     return {
         ("POST", "/agents/register"): _register_handler,
         ("POST", "/authorize"): _permit_handler,
+        ("POST", "/receipts/redeem"): _redeem_handler,
         ("POST", "/scan"): _scan_clean_handler,
     }
 
@@ -492,6 +527,7 @@ def async_routes():
     return {
         ("POST", "/agents/register"): _register_handler,
         ("POST", "/authorize"): _permit_handler,
+        ("POST", "/receipts/redeem"): _redeem_handler,
         ("POST", "/scan"): _scan_clean_handler,
     }
 
@@ -536,6 +572,7 @@ class TestAsyncAgentGate:
         transport = _make_transport({
             ("POST", "/agents/register"): _register_handler,
             ("POST", "/authorize"): _permit_handler,
+            ("POST", "/receipts/redeem"): _redeem_handler,
         })
         _patch_async_client(monkeypatch, transport)
 
@@ -581,6 +618,7 @@ class TestAsyncAgentGate:
         transport = _make_transport({
             ("POST", "/agents/register"): _register_handler,
             ("POST", "/authorize"): _permit_handler,
+            ("POST", "/receipts/redeem"): _redeem_handler,
         })
         _patch_async_client(monkeypatch, transport)
 
@@ -624,6 +662,7 @@ class TestAsyncAgentGate:
         transport = _make_transport({
             ("POST", "/agents/register"): _register_handler,
             ("POST", "/authorize"): _permit_handler,
+            ("POST", "/receipts/redeem"): _redeem_handler,
         })
         _patch_async_client(monkeypatch, transport)
 
@@ -663,6 +702,7 @@ class TestAsyncAgentGate:
         transport = _make_transport({
             ("POST", "/agents/register"): _register_handler,
             ("POST", "/authorize"): _permit_handler,
+            ("POST", "/receipts/redeem"): _redeem_handler,
         })
         _patch_async_client(monkeypatch, transport)
 

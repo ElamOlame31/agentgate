@@ -65,14 +65,23 @@ def _canonical_bytes(
     agent_id: str,
     decision: str,
     timestamp: float,
+    action_ref: str = "",
 ) -> bytes:
-    """Return the canonical UTF-8 byte string over which the MAC is computed."""
+    """Return the canonical UTF-8 byte string over which the MAC is computed.
+
+    action_ref binds the MAC to the operation itself. Without it the signature
+    attests that this instance issued a verdict for a request id at a time —
+    true, and not enough: nothing stops that verdict being spent on a different
+    operation. It is appended last so that a receipt issued before this field
+    existed (empty string) still verifies under the same code path.
+    """
     return CANONICAL_SEP.join([
         nonce,
         request_id,
         agent_id,
         decision.upper(),
         str(round(timestamp, 3)),
+        action_ref,
     ]).encode("utf-8")
 
 
@@ -87,6 +96,7 @@ def sign_response(
     agent_id: str,
     decision: str,
     timestamp: float,
+    action_ref: str = "",
 ) -> tuple[str, str]:
     """
     Generate (nonce, mac) for an authorization response.
@@ -98,7 +108,7 @@ def sign_response(
     response has not been tampered with or replayed.
     """
     nonce = str(uuid.uuid4())
-    canon = _canonical_bytes(nonce, request_id, agent_id, decision, timestamp)
+    canon = _canonical_bytes(nonce, request_id, agent_id, decision, timestamp, action_ref)
     mac = _compute_mac(canon)
     return nonce, mac
 
@@ -110,6 +120,7 @@ def verify_response(
     agent_id: str,
     decision: str,
     timestamp: float,
+    action_ref: str = "",
 ) -> tuple[bool, str]:
     """
     Verify an authorization response MAC.
@@ -138,7 +149,7 @@ def verify_response(
         )
 
     expected = _compute_mac(
-        _canonical_bytes(nonce, request_id, agent_id, decision, timestamp)
+        _canonical_bytes(nonce, request_id, agent_id, decision, timestamp, action_ref)
     )
     if not _hmac.compare_digest(expected, mac):
         return False, "SIGNATURE_MISMATCH"
@@ -159,7 +170,7 @@ def get_signing_info() -> dict:
         "algorithm": "HMAC-SHA256",
         "key_id": key_id,
         "max_age_seconds": RESPONSE_MAX_AGE_SECONDS,
-        "canonical_fields": ["nonce", "request_id", "agent_id", "decision", "timestamp"],
+        "canonical_fields": ["nonce", "request_id", "agent_id", "decision", "timestamp", "action_ref"],
         "canonical_sep": CANONICAL_SEP,
         "nonce_format": "UUID4",
         "mac_encoding": "hex",

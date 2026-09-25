@@ -399,10 +399,26 @@ class TestCanonicalBytes(unittest.TestCase):
         self.assertNotIn("1234567890.1234", decoded)
 
     def test_fields_joined_by_sep(self):
-        result = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0)
+        # nonce | request_id | agent_id | decision | timestamp | action_ref.
+        # action_ref joined the canonical string when the MAC started binding
+        # the operation and not only the verdict; it is last so that a receipt
+        # issued before it existed still verifies with an empty value.
+        result = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref")
         decoded = result.decode("utf-8")
         parts = decoded.split(rs.CANONICAL_SEP)
-        self.assertEqual(len(parts), 5)
+        self.assertEqual(len(parts), 6)
+        self.assertEqual(parts[-1], "ref")
+
+    def test_action_ref_defaults_to_empty_and_keeps_the_field(self):
+        parts = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0).decode("utf-8").split(
+            rs.CANONICAL_SEP)
+        self.assertEqual(len(parts), 6)
+        self.assertEqual(parts[-1], "")
+
+    def test_a_different_action_ref_changes_the_canonical_bytes(self):
+        a = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref-one")
+        b = rs._canonical_bytes("n", "r", "a", "PERMIT", 1.0, "ref-two")
+        self.assertNotEqual(a, b)
 
     def test_decision_is_uppercased(self):
         lower = rs._canonical_bytes("n", "r", "a", "permit", 1.0)

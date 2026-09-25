@@ -40,15 +40,48 @@ Async quickstart (LangGraph, CrewAI, Autogen):
 __version__ = "0.2.1"
 
 import asyncio
+import inspect
 import time
 import uuid
 import httpx
 from functools import wraps
 
+from agentgate import action_ref as _action_ref
 from agentgate.exceptions import (
-    AgentGateDenied, AgentGateEscalated, AgentGateNotRegistered,
-    AgentGatePending, AgentGateUnavailable,
+    AgentGateBindingError, AgentGateDenied, AgentGateEscalated,
+    AgentGateNotRegistered, AgentGatePending, AgentGateReceiptError,
+    AgentGateUnavailable,
 )
+
+
+def _material_arguments(
+    bound: dict,
+    resource_arg: str,
+    exclude: tuple[str, ...],
+    func_name: str,
+) -> dict:
+    """
+    Pick out the arguments that belong in the authorization.
+
+    Everything the function received, minus the resource and anything the
+    caller excluded. A value that cannot be represented in JSON raises instead
+    of being skipped: skipping is how an argument ends up unbound without
+    anyone deciding that it should be.
+    """
+    material = {}
+    for name, value in bound.items():
+        if name in ("self", "cls", resource_arg) or name in exclude:
+            continue
+        try:
+            _action_ref.canonical_json(value)
+        except _action_ref.ActionRefError as exc:
+            raise _action_ref.ActionRefError(
+                f"{func_name}(): argument '{name}' cannot be bound ({exc}). "
+                f"Add it to exclude=('{name}',) if it cannot affect what the "
+                f"call does, or pass a serializable form of it."
+            ) from exc
+        material[name] = value
+    return material
 
 
 class AgentGate:
@@ -134,7 +167,13 @@ class AgentGate:
 
     # ── Authorization ─────────────────────────────────────────────────────────
 
-    def authorize(self, action: str, resource: str, justification: str = "") -> dict:
+    def authorize(
+        self,
+        action: str,
+        resource: str,
+        justification: str = "",
+        arguments: dict | None = None,
+    ) -> dict:
         """
         Request authorization before performing an action.
 
@@ -161,6 +200,7 @@ class AgentGate:
                     "resource": resource,
                     "justification": justification,
                     "request_id": str(uuid.uuid4()),
+                    "arguments": arguments,
                 },
                 timeout=self.timeout,
             )
@@ -252,20 +292,106 @@ class AgentGate:
         except AgentGateDenied:
             return False
 
-    def guard(self, action: str, resource_arg: str = "resource"):
-        """
-        Decorator — authorizes before the wrapped function runs.
+    # ── Binding and redemption ────────────────────────────────────────────────
 
-        @gate.guard("read", resource_arg="path")
-        def read_file(path: str) -> str:
-            return open(path).read()
+    def check_binding(self, result: dict, action: str, resource: str,
+                      arguments: dict | None = None) -> None:
+        """
+        Confirm the decision covers the operation about to run, or raise.
+
+        Call this immediately before executing, not immediately after
+        authorizing — the gap between the two is exactly where the operation
+        can change, and checking early would prove nothing.
+
+        Raises AgentGateBindingError on a mismatch, and on an absent
+        action_ref: a server that issued no binding cannot be treated as having
+        authorized this particular call.
+        """
+        expected = result.get("action_ref") or ""
+        actual = _action_ref.compute_action_ref(
+            agent_id=result.get("agent_id") or self._agent_id or "",
+            action=action,
+            resource=resource,
+            arguments=arguments,
+        )
+        if expected != actual:
+            raise AgentGateBindingError(action, resource, expected, actual)
+
+    def redeem(self, result: dict) -> dict:
+        """
+        Spend the receipt, once, immediately before the action runs.
+
+        The server refuses a receipt that was already spent, forged, or is too
+        old. Any refusal raises — there is no partial success to interpret.
+        """
+        try:
+            r = httpx.post(
+                f"{self.url}/receipts/redeem",
+                headers=self._headers,
+                json={
+                    "nonce": result.get("response_nonce") or "",
+                    "mac": result.get("response_sig") or "",
+                    "request_id": result.get("request_id") or "",
+                    "agent_id": result.get("agent_id") or "",
+                    "decision": result.get("decision") or "",
+                    "timestamp": result.get("timestamp") or 0.0,
+                    "action_ref": result.get("action_ref") or "",
+                },
+                timeout=self.timeout,
+            )
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
+
+        if r.status_code == 409:
+            raise AgentGateReceiptError(r.json().get("detail", "REFUSED"))
+        r.raise_for_status()
+        return r.json()
+
+    def guard(self, action: str, resource_arg: str = "resource",
+              exclude: tuple[str, ...] = (), redeem: bool = True):
+        """
+        Decorator — authorize, bind, redeem, then run.
+
+        Every argument the function receives is bound into the authorization
+        except `resource_arg` (which is the resource) and anything named in
+        `exclude`. That default is the point: an argument left unbound can
+        change between the decision and the call without invalidating it, which
+        is how a guarded `transfer(account, amount, recipient)` ends up
+        authorizing any amount to anyone.
+
+            @gate.guard("transfer", resource_arg="account")
+            def transfer(account: str, amount_minor: int, recipient: str): ...
+
+        An argument that cannot be serialized to JSON raises rather than being
+        dropped quietly — name it in `exclude` to state that it cannot affect
+        the consequence of the call:
+
+            @gate.guard("write", resource_arg="path", exclude=("logger",))
+            def write_report(path: str, body: str, logger): ...
+
+        Set redeem=False to skip the redemption round-trip, keeping the binding
+        check. The action is then still bound but can be replayed.
         """
         def decorator(func):
+            signature = inspect.signature(func)
+
             @wraps(func)
             def wrapper(*args, **kwargs):
-                resource = kwargs.get(resource_arg) or (args[0] if args else "unknown")
-                self.authorize(action, str(resource), f"Calling {func.__name__}")
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                resource = bound.arguments.get(resource_arg) or "unknown"
+                material = _material_arguments(
+                    bound.arguments, resource_arg, exclude, func.__name__
+                )
+
+                result = self.authorize(
+                    action, str(resource), f"Calling {func.__name__}", material
+                )
+                self.check_binding(result, action, str(resource), material)
+                if redeem:
+                    self.redeem(result)
                 return func(*args, **kwargs)
+
             return wrapper
         return decorator
 
@@ -381,7 +507,13 @@ class AsyncAgentGate:
 
     # ── Authorization ─────────────────────────────────────────────────────────
 
-    async def authorize(self, action: str, resource: str, justification: str = "") -> dict:
+    async def authorize(
+        self,
+        action: str,
+        resource: str,
+        justification: str = "",
+        arguments: dict | None = None,
+    ) -> dict:
         """
         Request authorization before performing an action.
 
@@ -408,6 +540,7 @@ class AsyncAgentGate:
                         "resource": resource,
                         "justification": justification,
                         "request_id": str(uuid.uuid4()),
+                        "arguments": arguments,
                     },
                 )
                 r.raise_for_status()
@@ -493,20 +626,79 @@ class AsyncAgentGate:
         except AgentGateDenied:
             return False
 
-    def guard(self, action: str, resource_arg: str = "resource"):
-        """
-        Decorator — authorizes before the wrapped async function runs.
+    # ── Binding and redemption ────────────────────────────────────────────────
 
-        @gate.guard("read", resource_arg="path")
-        async def read_file(path: str) -> str:
-            return open(path).read()
+    def check_binding(self, result: dict, action: str, resource: str,
+                      arguments: dict | None = None) -> None:
+        """Confirm the decision covers the operation about to run, or raise.
+
+        See AgentGate.check_binding — the check is local, so it is identical.
+        """
+        expected = result.get("action_ref") or ""
+        actual = _action_ref.compute_action_ref(
+            agent_id=result.get("agent_id") or self._agent_id or "",
+            action=action,
+            resource=resource,
+            arguments=arguments,
+        )
+        if expected != actual:
+            raise AgentGateBindingError(action, resource, expected, actual)
+
+    async def redeem(self, result: dict) -> dict:
+        """Spend the receipt, once, immediately before the action runs."""
+        try:
+            async with httpx.AsyncClient(headers=self._headers, timeout=self.timeout) as client:
+                r = await client.post(
+                    f"{self.url}/receipts/redeem",
+                    json={
+                        "nonce": result.get("response_nonce") or "",
+                        "mac": result.get("response_sig") or "",
+                        "request_id": result.get("request_id") or "",
+                        "agent_id": result.get("agent_id") or "",
+                        "decision": result.get("decision") or "",
+                        "timestamp": result.get("timestamp") or 0.0,
+                        "action_ref": result.get("action_ref") or "",
+                    },
+                )
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            raise AgentGateUnavailable(self.url, e)
+
+        if r.status_code == 409:
+            raise AgentGateReceiptError(r.json().get("detail", "REFUSED"))
+        r.raise_for_status()
+        return r.json()
+
+    def guard(self, action: str, resource_arg: str = "resource",
+              exclude: tuple[str, ...] = (), redeem: bool = True):
+        """
+        Decorator — authorize, bind, redeem, then run.
+
+        Async equivalent of AgentGate.guard, with the same defaults: every
+        argument is bound except the resource and anything excluded.
+
+            @gate.guard("transfer", resource_arg="account")
+            async def transfer(account: str, amount_minor: int, recipient: str): ...
         """
         def decorator(func):
+            signature = inspect.signature(func)
+
             @wraps(func)
             async def wrapper(*args, **kwargs):
-                resource = kwargs.get(resource_arg) or (args[0] if args else "unknown")
-                await self.authorize(action, str(resource), f"Calling {func.__name__}")
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                resource = bound.arguments.get(resource_arg) or "unknown"
+                material = _material_arguments(
+                    bound.arguments, resource_arg, exclude, func.__name__
+                )
+
+                result = await self.authorize(
+                    action, str(resource), f"Calling {func.__name__}", material
+                )
+                self.check_binding(result, action, str(resource), material)
+                if redeem:
+                    await self.redeem(result)
                 return await func(*args, **kwargs)
+
             return wrapper
         return decorator
 
