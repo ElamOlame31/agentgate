@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from core.receipts.receipts.receipts.receipts import action_ref, response_signing
-from core.receipts.receipts.receipts.receipts.action_ref import ActionRefError, compute_action_ref, matches
+from core.receipts.receipts.receipts.receipts.receipts import action_ref, response_signing
+from core.receipts.receipts.receipts.receipts.receipts.action_ref import ActionRefError, compute_action_ref, matches
 
 
 BASE = dict(
