@@ -13,6 +13,10 @@ from core.detection.purpose_engine import compute_purpose_score
 from core.platform import audit
 from core.detection.kill_chain import analyze_kill_chain
 from core.detection.purpose_drift import detect_purpose_drift
+from core.detection.time_anomaly import (
+    detect_time_anomaly as _detect_time_anomaly,
+    BASELINE_WINDOW_SECONDS as _TIME_BASELINE_WINDOW,
+)
 
 # Sensitivity thresholds: minimum trust score required to PERMIT
 SENSITIVITY_THRESHOLDS = {
@@ -363,6 +367,15 @@ def compute_trust(
     all_flags.extend(kc_flags)
 
     all_flags.extend(detect_purpose_drift(agent.agent_id))
+
+    # Operating hours inferred from seven days of history rather than declared,
+    # so an agent that has only ever run during the working day is noticed when
+    # it starts at 3am without anyone having had to predict that in advance.
+    all_flags.extend(_detect_time_anomaly(
+        audit.get_agent_request_history(
+            agent.agent_id, window_seconds=_TIME_BASELINE_WINDOW
+        )
+    ))
 
     beh_score, beh_flags = score_behavioral(
         agent.agent_id, request.action,

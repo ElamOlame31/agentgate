@@ -203,7 +203,7 @@ class TestFlowStateFromTheAuditTrail:
 class TestFlowIsSigned:
     def test_the_signature_covers_the_flow_state(self):
         import time
-        from core.receipts.receipts.receipts import response_signing as rs
+        from core.receipts.receipts.receipts.receipts import response_signing as rs
 
         ts = time.time()
         nonce, mac = rs.sign_response("req-1", "a", "PERMIT", ts, "ref", "SECRET|TRUSTED")
@@ -213,7 +213,7 @@ class TestFlowIsSigned:
     def test_altering_the_flow_state_invalidates_the_signature(self):
         """A receipt cannot be re-presented as if the session had been cleaner."""
         import time
-        from core.receipts.receipts.receipts import response_signing as rs
+        from core.receipts.receipts.receipts.receipts import response_signing as rs
 
         ts = time.time()
         nonce, mac = rs.sign_response("req-1", "a", "PERMIT", ts, "ref", "SECRET|TRUSTED")
@@ -223,5 +223,5 @@ class TestFlowIsSigned:
         assert why == "SIGNATURE_MISMATCH"
 
     def test_signing_info_advertises_the_field(self):
-        from core.receipts.receipts.receipts import response_signing as rs
+        from core.receipts.receipts.receipts.receipts import response_signing as rs
         assert "flow" in rs.get_signing_info()["canonical_fields"]
