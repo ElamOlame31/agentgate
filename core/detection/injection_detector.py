@@ -114,11 +114,23 @@ def should_scan(
     processes_external_content: bool,
     authorized_actions: list[str],
     resource_sensitivity: str,
+    resource: str = "",
 ) -> bool:
     """
     Layer 1: decide whether content scanning is warranted.
     Fast, zero cost — runs on metadata only.
+
+    Auto-enables scanning when the resource is a known external content
+    source (GitHub PRs, Jira tickets, Slack messages, webhooks, etc.)
+    regardless of processes_external_content — indirect prompt injection
+    via trusted channels requires no explicit opt-in to detect.
     """
+    # Auto-detect: external content sources always warrant scanning
+    if resource:
+        from core.external_content_classifier import is_external_content_source
+        if is_external_content_source(resource):
+            return True
+
     if not processes_external_content:
         return False
 

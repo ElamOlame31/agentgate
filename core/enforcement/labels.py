@@ -156,11 +156,28 @@ def compute_flow_state(
             if entry["resource"] not in sources:
                 sources.append(entry["resource"])
 
+    # A session that has read a recognisable user-content channel — a PR body,
+    # a ticket, a chat message — is carrying material the agent did not author,
+    # whether or not anyone declared it would. Indirect injection works exactly
+    # because those channels are trusted, so waiting for a declaration would
+    # leave the common case unprotected.
+    from core.detection.external_content_classifier import is_external_content_source
+
+    external_read = next(
+        (e["resource"] for e in history
+         if e["action"].lower() in _READ_ACTIONS
+         and is_external_content_source(e["resource"])),
+        None,
+    )
+
     integrity = Integrity.TRUSTED
     reason = ""
     if injection_detected:
         integrity = Integrity.UNTRUSTED
         reason = "injection detected in content submitted with this request"
+    elif external_read:
+        integrity = Integrity.UNTRUSTED
+        reason = f"session read a user-content channel ({external_read})"
     elif processes_external_content:
         # The agent declared that it consumes content it did not author. That is
         # a statement about its inputs, so its decisions are influenced by

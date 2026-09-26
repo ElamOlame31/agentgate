@@ -104,6 +104,7 @@ from core.receipts import response_signing as _response_signing
 from core.receipts import action_ref as _action_ref
 from core.receipts import receipts as _receipts
 from core.enforcement import labels as _labels
+from core.detection import external_content_classifier as _external_content
 from core.enforcement import fail_mode as _fail_mode
 from core.enforcement import latency as _latency
 from core.receipts import receipt_signing as _receipt_signing
@@ -884,7 +885,14 @@ async def authorize(request: Request, body: AuthorizationRequest):
     # ── Inline injection scan (when content is passed with the request) ────────
     # Agents with processes_external_content=True can submit the document/tool
     # output directly in the authorization request — no separate /scan call needed.
-    if agent.processes_external_content and body.content:
+    # Scanning is not opt-in. A resource that is recognisably a user-content
+    # channel — a PR body, a ticket description, a Slack message — carries the
+    # same risk whether or not the agent thought to declare it, and indirect
+    # injection works precisely because those channels are trusted.
+    if body.content and (
+        agent.processes_external_content
+        or _external_content.is_external_content_source(body.resource)
+    ):
         from core.detection.injection_detector import scan_content as _scan_content
         scan_result = await asyncio.to_thread(_scan_content, body.content, agent.declared_purpose)
         _recent_scans[body.agent_id] = {

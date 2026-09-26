@@ -274,3 +274,36 @@ class TestCapabilityWarning:
         assert check_flow(state, "send", "/outbox/x.txt",
                           arguments={"to": "a@b.com"},
                           allowed_destinations=["*@b.com"]) == []
+
+
+class TestUndeclaredExternalSources:
+    """
+    Integrity must not depend on the agent having declared its own exposure.
+
+    Indirect injection works because the channel is trusted: a PR body, a
+    ticket, a chat message. An agent reading those is carrying material it did
+    not author whether or not anyone thought to set a flag, and waiting for the
+    declaration would leave the common case unprotected.
+    """
+
+    def test_reading_a_user_content_channel_contaminates_the_session(self):
+        aid = "flowagent_undeclared_pr"
+        audit.log_request_history(aid, "read", "/github/pulls/1234")
+        state = compute_flow_state(aid, processes_external_content=False)
+        assert state.integrity == Integrity.UNTRUSTED
+        assert "/github/pulls/1234" in state.untrusted_reason
+
+    def test_reading_an_ordinary_resource_does_not(self):
+        aid = "flowagent_ordinary"
+        audit.log_request_history(aid, "read", "/reports/q3.pdf")
+        assert compute_flow_state(aid).integrity == Integrity.TRUSTED
+
+    def test_an_undeclared_source_still_constrains_the_destination(self):
+        """The whole point: the flow rule applies without an opt-in."""
+        aid = "flowagent_undeclared_send"
+        audit.log_request_history(aid, "read", "/github/pulls/99")
+        state = compute_flow_state(aid, processes_external_content=False)
+        flags = check_flow(state, "send", "/outbox/x.txt",
+                           arguments={"to": "attacker@evil.com"},
+                           allowed_destinations=["/outbox/*"])
+        assert any("INTEGRITY" in f for f in flags)
