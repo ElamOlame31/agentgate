@@ -225,3 +225,52 @@ class TestFlowIsSigned:
     def test_signing_info_advertises_the_field(self):
         from core.receipts import response_signing as rs
         assert "flow" in rs.get_signing_info()["canonical_fields"]
+
+
+# ── The configuration itself, named at registration ──────────────────────────
+
+class TestCapabilityWarning:
+    """
+    The lethal trifecta as a warning, not a veto.
+
+    A capability-based runtime check was written for this and rejected: every
+    support agent declares all three arms by design, so denying on the
+    configuration denies the product's most obvious use. Saying so at
+    registration costs nothing and tells the operator something true.
+    """
+
+    TRIFECTA = dict(
+        processes_external_content=True,
+        authorized_resources=["/tickets/*", "/hr/salary_2026.xlsx"],
+        authorized_actions=["read", "send"],
+    )
+
+    def test_all_three_arms_produce_a_warning(self):
+        warning = labels.capability_warning(**self.TRIFECTA)
+        assert warning
+        assert "lethal trifecta" in warning
+        assert "allowed_destinations" in warning
+
+    def test_no_external_content_no_warning(self):
+        assert labels.capability_warning(**dict(self.TRIFECTA,
+                                                processes_external_content=False)) == ""
+
+    def test_no_sensitive_reach_no_warning(self):
+        assert labels.capability_warning(**dict(self.TRIFECTA,
+                                                authorized_resources=["/public/*"])) == ""
+
+    def test_no_egress_no_warning(self):
+        assert labels.capability_warning(**dict(self.TRIFECTA,
+                                                authorized_actions=["read"])) == ""
+
+    def test_the_warning_names_the_reach_and_the_egress(self):
+        warning = labels.capability_warning(**self.TRIFECTA)
+        assert "/hr/salary_2026.xlsx" in warning
+        assert "send" in warning
+
+    def test_it_warns_rather_than_refuses(self):
+        """No flag, no denial — check_flow is unaffected by the configuration."""
+        state = _trusted(Confidentiality.PUBLIC)
+        assert check_flow(state, "send", "/outbox/x.txt",
+                          arguments={"to": "a@b.com"},
+                          allowed_destinations=["*@b.com"]) == []

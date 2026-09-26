@@ -233,6 +233,74 @@ window), consistent with the treatment of `CRITICAL_VELOCITY` and
   prior+1 at deny threshold, one short of deny
 - `TestEdgeCases` (8) — encoded slash, root resource, very long path, resource with spaces,
   missing resource key, empty string resource, 5000-entry performance, zero history adds one
+## 2026-06-18 — Lethal Trifecta kill chain detector (Detector 5)
+
+**Branch / PR:** `daily/2026-06-18-lethal-trifecta-detector` · https://github.com/ElamOlame31/agentgate-public/pull/8
+
+### What changed
+
+**Modified: `core/kill_chain.py`**
+
+Added **Detector 5: Lethal Trifecta** to `analyze_kill_chain()`.
+
+The detector identifies when an agent has all three "lethal trifecta" arms active within
+its 24-hour session window — a named structural attack pattern in agentic AI security:
+
+- **Arm 1 — External content read**: action `fetch`/`browse`/`scrape`/`crawl`/`download`,
+  or a resource starting with `http://`, `https://`, `ftp://`, or containing external
+  resource keywords. Exfil actions are explicitly excluded to prevent double-counting
+  with Arm 3 (direction matters: inbound read vs. outbound send).
+
+- **Arm 2 — Sensitive data access**: resource contains HIGH or CRITICAL sensitivity
+  keywords (salary, confidential, credentials, hr, finance, etc.). Uses resource-only
+  classification (not action-type) to prevent false-positive trifecta on external-read +
+  export-to-generic-path alone.
+
+- **Arm 3 — External communication**: action in the canonical exfil set (send, email,
+  upload, post, forward, export, transfer, publish), or resource contains an external
+  destination keyword (webhook, smtp, slack, s3, outbound, etc.).
+
+The detector fires `KILL_CHAIN:LETHAL_TRIFECTA:EXT_READ+SENSITIVE_ACCESS+EXT_COMM`
+when all three arms are present in the combined (history + current request) window AND
+the current action is Arm 2 or Arm 3 (the dangerous completion step). Hard DENY.
+
+The 24-hour window catches methodical assembly across a long session; the 5-minute
+BULK_READ_THEN_EXFIL detector already covers the burst variant.
+
+Three new constants added to the module:
+- `_EXTERNAL_READ_ACTIONS` — frozenset of inbound-fetch action verbs
+- `_EXTERNAL_URL_PREFIXES` — tuple of URL scheme prefixes (http://, https://, ftp://)
+- `_EXFIL_DESTINATION_KEYWORDS` — frozenset of external destination resource keywords
+
+**Modified: `core/trust_engine.py`**
+
+Added a hard DENY in `make_decision()` for `LETHAL_TRIFECTA` flags (before contract
+violation checks). Consistent with all other hard-DENY kill chain patterns.
+
+**Modified: `core/quarantine.py`**
+
+Added `"KILL_CHAIN:LETHAL_TRIFECTA"` to `HARD_QUARANTINE_FLAGS`. The `should_quarantine_on_flags()`
+prefix matcher already handles the detail-suffixed flag form automatically.
+
+**New file: `tests/test_lethal_trifecta_stdlib.py`**
+
+62 stdlib-only tests across 6 classes:
+
+- `TestExternalReadArm` (14 tests) — HTTP/HTTPS/FTP URL detection, action-based detection
+  (fetch/browse/scrape/crawl/download), resource keyword detection, exfil-action exclusion,
+  case insensitivity.
+- `TestSensitiveAccessArm` (10 tests) — CRITICAL/HIGH keyword paths, exfil-to-nonsensitive
+  resource is not Arm 2, exfil-to-sensitive-resource IS Arm 2, case insensitivity.
+- `TestExternalCommArm` (14 tests) — all canonical exfil actions, webhook/slack/smtp/s3
+  resource destinations, case insensitivity.
+- `TestTrifectaDetection` (12 tests) — classic attack fires, email exfil fires, current-is-
+  both-arm2-and-arm3 fires, missing each arm individually does not fire, current-arm1-only
+  does not fire, slow assembly across history does not fire without current Arm 2 or 3, empty
+  history, agent isolation.
+- `TestTrifectaQuarantineIntegration` (4 tests) — trifecta in HARD_QUARANTINE_FLAGS,
+  should_quarantine fires, prefix-matching with detail suffix, escalate-only flags still pass.
+- `TestKillChainConstants` (5 tests) — frozenset types, three URL prefixes, all canonical
+  exfil actions are Arm 3, all fetch verbs are Arm 1.
 
 ### Test results
 
@@ -692,6 +760,15 @@ Ran 14 tests in 0.134s — OK
 
 Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
 are not runnable in this environment due to network restrictions.
+Ran 62 tests in 0.007s — OK
+  (62 new: tests/test_lethal_trifecta_stdlib.py, stdlib only)
+
+Ran 14 tests in 0.142s — OK
+  (14 existing: tests/test_audit_wal_stdlib.py — regression check)
+```
+
+Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`) are
+not runnable in this environment due to network restrictions.
 
 ### Market analysis
 

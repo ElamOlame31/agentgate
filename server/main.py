@@ -352,7 +352,19 @@ async def register_agent(request: Request, reg: AgentRegistration):
     _agents[reg.agent_id] = reg
     audit.save_agent(reg)
     await manager.broadcast({"type": "agents", "data": _agent_list()})
-    return {"agent_id": reg.agent_id, "token": jwt_token, "status": "registered"}
+    # Surfaced at registration rather than enforced at runtime: see
+    # labels.capability_warning for why the configuration is worth naming and
+    # not worth blocking on.
+    warning = _labels.capability_warning(
+        reg.processes_external_content, reg.authorized_resources, reg.authorized_actions
+    )
+    if warning:
+        print(f"[AgentGate] {reg.agent_id}: {warning}", flush=True)
+
+    response = {"agent_id": reg.agent_id, "token": jwt_token, "status": "registered"}
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 @app.get("/agents", response_model=list, dependencies=[Depends(require_api_key)])

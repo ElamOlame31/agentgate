@@ -271,3 +271,47 @@ def explain_violation(flags: list[str], state: FlowState) -> str:
                 f"{state.untrusted_reason or 'untrusted influence in session'}"
             )
     return ""
+
+
+def capability_warning(
+    processes_external_content: bool,
+    authorized_resources: list[str],
+    authorized_actions: list[str],
+) -> str:
+    """
+    Tell an operator at registration when an agent's declared shape is the
+    dangerous one, and return "" otherwise.
+
+    Exposure to content the agent did not author, reach into sensitive
+    resources, and a way to send outward: each is ordinary, and the three
+    together are one instruction away from exfiltration. Simon Willison named
+    the combination the lethal trifecta.
+
+    This is a warning, not a refusal. A capability-based version of this check
+    was written as a runtime veto and rejected: every support agent holds all
+    three by design, so denying on the configuration would deny the product's
+    most obvious use. What the runtime enforces instead is narrower and
+    provable — an untrusted session cannot pick an undeclared destination, and
+    a session that has actually exercised all three arms is denied by the
+    trifecta detector. The configuration is worth knowing about; it is not
+    worth blocking on.
+    """
+    if not processes_external_content:
+        return ""
+
+    reach = [r for r in authorized_resources
+             if confidentiality_of(r) >= Confidentiality.CONFIDENTIAL]
+    if not reach:
+        return ""
+
+    egress = sorted({a.lower() for a in authorized_actions} & SINK_ACTIONS)
+    if not egress:
+        return ""
+
+    return (
+        "This agent declares all three arms of the lethal trifecta: it reads "
+        f"content it did not author, it can reach {', '.join(reach[:3])}, and it "
+        f"can send via {', '.join(egress)}. Nothing is blocked on this, but "
+        "declare allowed_destinations — without them, every send from a session "
+        "carrying external content will be refused."
+    )

@@ -427,6 +427,14 @@ def make_decision(breakdown: TrustBreakdown, flags: list[str]) -> Decision:
     if any("READ_THEN_DELETE" in f for f in flags):
         return Decision.DENY
 
+    # Hard deny when all three lethal trifecta arms are active in the session:
+    # external content read, sensitive data access, and an outbound attempt.
+    # Note this is observed, not declared — the agent has to have actually done
+    # all three. A capability-based version of this check was rejected because
+    # every support agent is trifecta-capable by design.
+    if any("LETHAL_TRIFECTA" in f for f in flags):
+        return Decision.DENY
+
     # Hard deny when resource hammering exceeds the extreme-frequency threshold.
     # The soft threshold (ESCALATE) falls through to the score-based path below.
     if any("RESOURCE_HAMMERING:HARD" in f for f in flags):
