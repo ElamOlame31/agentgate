@@ -334,6 +334,54 @@ without requiring `processes_external_content=True` at registration time.
   fullwidth NFKC, uppercase, mixed case, URL-form host, encoded path
 - `TestIsExternalContentSource` (7), `TestClassifyReturnShape` (4),
   `TestHostnamePrecedence` (3), `TestRealWorldAttackPaths` (6)
+## 2026-06-14 — OWASP Agentic Top 10 compliance mapping and API endpoint
+
+**Branch:** `daily/2026-06-14-owasp-agentic-compliance`
+**PR:** [#4](https://github.com/ElamOlame31/agentgate-public/pull/4)
+
+### What changed
+
+**New file: `core/owasp_agentic.py`**
+
+Zero-external-dependency module that maps all 10 OWASP Top 10 for Agentic
+Applications 2026 risk categories (ASI01:2026 – ASI10:2026) to the specific
+AgentGate components that enforce or detect each one.
+
+Each `RiskEntry` carries:
+- `code` / `name` / `description` — authoritative OWASP fields
+- `coverage` — `FULL`, `PARTIAL`, or `NONE` (enum)
+- `mechanisms` — named AgentGate modules/behaviors that cover this risk
+- `notes` — for PARTIAL entries, an honest statement of what falls outside a
+  runtime authorization layer by architecture
+
+Current coverage: 7 FULL, 3 PARTIAL (ASI04 supply chain, ASI05 code execution,
+ASI09 human-agent trust), 0 NONE. Score: 85.0%.
+
+Public API: `get_risks()`, `get_risk(code)`, `generate_compliance_report(include_mechanisms)`.
+
+**Modified: `server/main.py`**
+
+Added `GET /compliance/owasp-agentic` endpoint (auth required, rate-limited
+30/minute). Returns the structured JSON compliance report. Optional
+`?mechanisms=false` for a compact summary. Lazy-imports `owasp_agentic` so
+the endpoint has zero startup overhead when not called.
+
+**New file: `tests/test_owasp_agentic.py`**
+
+53 stdlib-only tests across 5 test classes:
+- `TestTaxonomyStructure` (9 tests) — 10 risks, unique sequential ASI codes,
+  non-empty names/descriptions, mechanism requirements, valid enum values
+- `TestSpecificRiskCoverage` (11 tests) — each ASI code's coverage level
+  asserted explicitly, plus the 7/3/0 aggregate count
+- `TestGetHelpers` (6 tests) — `get_risks()` returns a copy, length 10;
+  `get_risk()` by code, case-insensitive, unknown returns None, all 10 resolvable
+- `TestComplianceReport` (15 tests) — required keys, correct framework fields,
+  timestamp within 120s, 85.0% score, 10-risk list, mechanisms present/absent
+  per flag, notes on partials, sequential codes, JSON serialisability, determinism
+- `TestMechanismKeywords` (12 tests) — spot-checks that specific module names
+  (injection_detector, mcp_descriptor_guard, kill_chain, delegation, token,
+  output_sanitizer, contagion, quarantine, purpose_engine) appear in the correct
+  risk entries
 
 ### Test results
 
@@ -791,6 +839,9 @@ Ran 34 tests in 0.172s — OK
 
 Full integration tests (requiring `pydantic`, `fastapi`, `sentence-transformers`)
 are not runnable in this environment due to network restrictions.
+
+Ran 53 tests in 0.008s — OK  (test_owasp_agentic.py, stdlib only)
+```
 
 ### Market analysis
 
