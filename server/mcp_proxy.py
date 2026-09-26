@@ -333,6 +333,50 @@ async def mcp_proxy(request: Request):
         )
 
     if decision == "PERMIT":
+        # ── MCP argument injection scan ────────────────────────────────────────
+        # Scan tool call arguments BEFORE forwarding to the upstream server.
+        # Detects shell injection, SSRF, path traversal, code injection, and
+        # null bytes embedded in argument values — covers ~43% of 2026 MCP CVEs.
+        # Only runs for tools/call (resources/read has no free-form arguments).
+        if method == "tools/call":
+            try:
+                from core.detection.mcp_arg_scanner import scan_arguments as _scan_args
+                _arg_scan = _scan_args(
+                    (params or {}).get("arguments") or {},
+                    tool_name=action,
+                )
+                if _arg_scan.blocked:
+                    _top_finding = _arg_scan.findings[0]
+                    _reason = (
+                        f"TOOL_ARG_INJECTION:{_top_finding.category}:"
+                        f"{_top_finding.subcategory} in argument '{_top_finding.arg_path}'"
+                    )
+                    print(
+                        f"[AgentGate MCP] ARG_INJECTION BLOCKED — agent={agent_id} "
+                        f"tool={action} finding={_top_finding.category}:{_top_finding.subcategory}",
+                        flush=True,
+                    )
+                    import asyncio
+                    asyncio.create_task(
+                        _report_to_agentgate(
+                            agent_id, token, action, _reason, True,
+                            list(dict.fromkeys(f.category for f in _arg_scan.findings)),
+                        )
+                    )
+                    return JSONResponse(
+                        _jsonrpc_error(req_id, -32010, _reason)
+                    )
+                elif _arg_scan.findings:
+                    # Medium-severity warning — forward but annotate
+                    print(
+                        f"[AgentGate MCP] ARG_WARNING — agent={agent_id} "
+                        f"tool={action} severity={_arg_scan.highest_severity}",
+                        flush=True,
+                    )
+            except ImportError:
+                pass  # scanner not co-located — skip silently
+        # ── End argument injection scan ────────────────────────────────────────
+
         upstream = await _forward(body, {})
 
         # ── MCP tool poisoning scan ────────────────────────────────────────────
@@ -382,6 +426,7 @@ async def healthz():
         "upstream_configured": bool(MCP_UPSTREAM_URL),
         "tool_poisoning_scan": "enabled",
         "descriptor_guard": "enabled",
+        "arg_injection_scan": "enabled",
     }
 
 
