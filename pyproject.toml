@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentgate-pdp"
-version = "0.2.1"
-description = "Context-aware trust authorization for agentic AI systems"
+version = "0.3.0"
+description = "Runtime authorization for autonomous AI agents, with receipts an auditor can verify offline"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -28,6 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+verify = [
+    "cryptography>=42.0",
+]
 langchain = [
     "langchain-core>=0.3.0",
     "langchain-anthropic>=0.2.0",
@@ -37,6 +40,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+
+[project.scripts]
+agentgate-verify = "agentgate.verify:main"
 
 [project.urls]
 Homepage = "https://github.com/ElamOlame31/agentgate-public"

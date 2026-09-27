@@ -37,7 +37,7 @@ Async quickstart (LangGraph, CrewAI, Autogen):
         return open(path).read()
 """
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 import asyncio
 import inspect
@@ -146,8 +146,22 @@ class AgentGate:
         scope_at_delegation: list[str] | None = None,
         processes_external_content: bool = False,
         requires_human_approval: bool = False,
+        allowed_destinations: list[str] | None = None,
+        max_requests_per_minute: int | None = None,
+        allowed_time_windows: list[str] | None = None,
+        max_consecutive_same_action: int | None = None,
     ) -> "AgentGate":
-        """Register this agent with AgentGate. Returns self for chaining."""
+        """Register this agent with AgentGate. Returns self for chaining.
+
+        `allowed_destinations` is where this agent may send data, as fnmatch
+        patterns — e.g. ["/outbox/*", "*@ourcompany.com"]. It has to be
+        declared here, before any content arrives, because that is what makes
+        it meaningful: once a session carries material the agent did not
+        author, that material must not get to choose the destination.
+
+        The three limits after it are the behavioural contract. They are hard:
+        a violation denies regardless of trust score.
+        """
         payload: dict = {
             "agent_id": agent_id,
             "name": name,
@@ -162,6 +176,16 @@ class AgentGate:
             payload["delegated_by"] = delegated_by
         if scope_at_delegation:
             payload["scope_at_delegation"] = scope_at_delegation
+        # Sent only when declared: None and an empty list mean different things
+        # to the server, and "no destinations allowed" is not the default.
+        if allowed_destinations is not None:
+            payload["allowed_destinations"] = allowed_destinations
+        if max_requests_per_minute is not None:
+            payload["max_requests_per_minute"] = max_requests_per_minute
+        if allowed_time_windows is not None:
+            payload["allowed_time_windows"] = allowed_time_windows
+        if max_consecutive_same_action is not None:
+            payload["max_consecutive_same_action"] = max_consecutive_same_action
 
         try:
             r = httpx.post(
@@ -491,8 +515,22 @@ class AsyncAgentGate:
         scope_at_delegation: list[str] | None = None,
         processes_external_content: bool = False,
         requires_human_approval: bool = False,
+        allowed_destinations: list[str] | None = None,
+        max_requests_per_minute: int | None = None,
+        allowed_time_windows: list[str] | None = None,
+        max_consecutive_same_action: int | None = None,
     ) -> "AsyncAgentGate":
-        """Register this agent with AgentGate. Returns self for chaining."""
+        """Register this agent with AgentGate. Returns self for chaining.
+
+        `allowed_destinations` is where this agent may send data, as fnmatch
+        patterns — e.g. ["/outbox/*", "*@ourcompany.com"]. It has to be
+        declared here, before any content arrives, because that is what makes
+        it meaningful: once a session carries material the agent did not
+        author, that material must not get to choose the destination.
+
+        The three limits after it are the behavioural contract. They are hard:
+        a violation denies regardless of trust score.
+        """
         payload: dict = {
             "agent_id": agent_id,
             "name": name,
@@ -507,6 +545,16 @@ class AsyncAgentGate:
             payload["delegated_by"] = delegated_by
         if scope_at_delegation:
             payload["scope_at_delegation"] = scope_at_delegation
+        # Sent only when declared: None and an empty list mean different things
+        # to the server, and "no destinations allowed" is not the default.
+        if allowed_destinations is not None:
+            payload["allowed_destinations"] = allowed_destinations
+        if max_requests_per_minute is not None:
+            payload["max_requests_per_minute"] = max_requests_per_minute
+        if allowed_time_windows is not None:
+            payload["allowed_time_windows"] = allowed_time_windows
+        if max_consecutive_same_action is not None:
+            payload["max_consecutive_same_action"] = max_consecutive_same_action
 
         try:
             async with httpx.AsyncClient(headers=self._headers, timeout=self.timeout) as client:

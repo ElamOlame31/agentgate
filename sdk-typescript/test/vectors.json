@@ -1,0 +1,313 @@
+{
+  "_generated_by": "test/generate_vectors.py against core/receipts/*.py",
+  "_signing_key": "agentgate-dev-signing-key-change-in-production (the default)",
+  "descriptor_version": 1,
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA173kcki6onutCunF/h4R7TjlMoti3oADahGvYT+h1oo=\n-----END PUBLIC KEY-----\n",
+  "operations": [
+    {
+      "name": "plain payment",
+      "operation": {
+        "agent_id": "billing-agent",
+        "action": "transfer",
+        "resource": "/payments/outbound",
+        "arguments": {
+          "amount_cents": 25000,
+          "currency": "EUR",
+          "to": "acct_9931"
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/payments/outbound",
+      "descriptor_json": "{\"action\":\"transfer\",\"agent_id\":\"billing-agent\",\"arguments\":{\"amount_cents\":25000,\"currency\":\"EUR\",\"to\":\"acct_9931\"},\"policy_version\":\"\",\"resource\":\"/payments/outbound\",\"v\":1}",
+      "action_ref": "066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42"
+    },
+    {
+      "name": "argument order must not matter",
+      "operation": {
+        "agent_id": "billing-agent",
+        "action": "transfer",
+        "resource": "/payments/outbound",
+        "arguments": {
+          "to": "acct_9931",
+          "currency": "EUR",
+          "amount_cents": 25000
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/payments/outbound",
+      "descriptor_json": "{\"action\":\"transfer\",\"agent_id\":\"billing-agent\",\"arguments\":{\"amount_cents\":25000,\"currency\":\"EUR\",\"to\":\"acct_9931\"},\"policy_version\":\"\",\"resource\":\"/payments/outbound\",\"v\":1}",
+      "action_ref": "066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42"
+    },
+    {
+      "name": "action is lowercased",
+      "operation": {
+        "agent_id": "billing-agent",
+        "action": "TRANSFER",
+        "resource": "/payments/outbound",
+        "arguments": {
+          "amount_cents": 25000
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/payments/outbound",
+      "descriptor_json": "{\"action\":\"transfer\",\"agent_id\":\"billing-agent\",\"arguments\":{\"amount_cents\":25000},\"policy_version\":\"\",\"resource\":\"/payments/outbound\",\"v\":1}",
+      "action_ref": "377a5dfc223937ae7f8f5a6622107d97beda2bbc5dd0855841190574ac759e28"
+    },
+    {
+      "name": "no arguments at all",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "/docs/readme.md",
+        "arguments": null,
+        "policy_version": ""
+      },
+      "normalized_resource": "/docs/readme.md",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/docs/readme.md\",\"v\":1}",
+      "action_ref": "fc2c0dd810a2ff3cf2a47380ebb2451e0e53694b6686c0752327777ef2c3c7b5"
+    },
+    {
+      "name": "traversal is normalized away",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "/var/data/../../etc/passwd",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/etc/passwd",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/etc/passwd\",\"v\":1}",
+      "action_ref": "173b04628c1ddca9c0b60880fee981606d1238686492fbf996e4f8a13a8a2bf7"
+    },
+    {
+      "name": "double encoding is decoded twice",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "/var/%252e%252e/etc/passwd",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/etc/passwd",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/etc/passwd\",\"v\":1}",
+      "action_ref": "173b04628c1ddca9c0b60880fee981606d1238686492fbf996e4f8a13a8a2bf7"
+    },
+    {
+      "name": "two leading slashes are preserved",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "//etc/passwd",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "//etc/passwd",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"//etc/passwd\",\"v\":1}",
+      "action_ref": "57dcce8bdcc8bb6be2b6b05064b32e8917bf638f8775d279cfcaaf3ec8d360b5"
+    },
+    {
+      "name": "three leading slashes collapse",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "///etc/passwd",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/etc/passwd",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/etc/passwd\",\"v\":1}",
+      "action_ref": "173b04628c1ddca9c0b60880fee981606d1238686492fbf996e4f8a13a8a2bf7"
+    },
+    {
+      "name": "relative path gains a leading slash",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "docs/./notes//draft.md",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/docs/notes/draft.md",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/docs/notes/draft.md\",\"v\":1}",
+      "action_ref": "817c610f2031713e23cab4d247d7d8068505c70cbaadc305cd25ca16a476c86c"
+    },
+    {
+      "name": "stray percent survives",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "/reports/100%/summary",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/reports/100%/summary",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/reports/100%/summary\",\"v\":1}",
+      "action_ref": "c27f32f9a39c7bed934f8abcfe503b3841d1fee53a71cbfeb795ef1cc0f93169"
+    },
+    {
+      "name": "invalid escape survives",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "/files/%zz/report.txt",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/files/%zz/report.txt",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/files/%zz/report.txt\",\"v\":1}",
+      "action_ref": "9fdd9b0d8e457670b8a923a74ff5be04982035eb72f146ceb186efd445a72ff8"
+    },
+    {
+      "name": "unicode is not escaped",
+      "operation": {
+        "agent_id": "agent-fr",
+        "action": "send",
+        "resource": "/outbox/résumé.pdf",
+        "arguments": {
+          "subject": "Café — naïve façade",
+          "to": "élodie@example.com"
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/outbox/résumé.pdf",
+      "descriptor_json": "{\"action\":\"send\",\"agent_id\":\"agent-fr\",\"arguments\":{\"subject\":\"Café — naïve façade\",\"to\":\"élodie@example.com\"},\"policy_version\":\"\",\"resource\":\"/outbox/résumé.pdf\",\"v\":1}",
+      "action_ref": "fc34509cbadb5d8fae4d9a04d91ef2d8335b38327b3be2418bac274654d3aae5"
+    },
+    {
+      "name": "nested structures and mixed types",
+      "operation": {
+        "agent_id": "ops",
+        "action": "deploy",
+        "resource": "/clusters/prod",
+        "arguments": {
+          "replicas": 3,
+          "canary": true,
+          "rollback": null,
+          "targets": [
+            "eu-west-1",
+            "us-east-1"
+          ],
+          "limits": {
+            "cpu": "2",
+            "memory_mb": 4096
+          }
+        },
+        "policy_version": "v7"
+      },
+      "normalized_resource": "/clusters/prod",
+      "descriptor_json": "{\"action\":\"deploy\",\"agent_id\":\"ops\",\"arguments\":{\"canary\":true,\"limits\":{\"cpu\":\"2\",\"memory_mb\":4096},\"replicas\":3,\"rollback\":null,\"targets\":[\"eu-west-1\",\"us-east-1\"]},\"policy_version\":\"v7\",\"resource\":\"/clusters/prod\",\"v\":1}",
+      "action_ref": "71bc6f5aa5449afae54351167b67b74124b586d9081e723dab49e9d4140dca82"
+    },
+    {
+      "name": "control characters in a string",
+      "operation": {
+        "agent_id": "ops",
+        "action": "write",
+        "resource": "/logs/app.log",
+        "arguments": {
+          "line": "first\nsecond\ttabbed\u0001"
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/logs/app.log",
+      "descriptor_json": "{\"action\":\"write\",\"agent_id\":\"ops\",\"arguments\":{\"line\":\"first\\nsecond\\ttabbed\\u0001\"},\"policy_version\":\"\",\"resource\":\"/logs/app.log\",\"v\":1}",
+      "action_ref": "82b62bcc596ca8ccb385473f40ebfcc81b6e64506cf59a4edc7c4b016890e102"
+    },
+    {
+      "name": "non-integral number",
+      "operation": {
+        "agent_id": "metrics",
+        "action": "record",
+        "resource": "/metrics/latency",
+        "arguments": {
+          "p99_ms": 293.5,
+          "ratio": 0.125
+        },
+        "policy_version": ""
+      },
+      "normalized_resource": "/metrics/latency",
+      "descriptor_json": "{\"action\":\"record\",\"agent_id\":\"metrics\",\"arguments\":{\"p99_ms\":293.5,\"ratio\":0.125},\"policy_version\":\"\",\"resource\":\"/metrics/latency\",\"v\":1}",
+      "action_ref": "4886c4f5f9cb7c5fe36d9532c82565c89104101e7817a3d7502963ab045952b5"
+    },
+    {
+      "name": "empty resource",
+      "operation": {
+        "agent_id": "reader",
+        "action": "read",
+        "resource": "",
+        "arguments": {},
+        "policy_version": ""
+      },
+      "normalized_resource": "/.",
+      "descriptor_json": "{\"action\":\"read\",\"agent_id\":\"reader\",\"arguments\":{},\"policy_version\":\"\",\"resource\":\"/.\",\"v\":1}",
+      "action_ref": "8bb9319a162c55649747f05285176847c8ba8f2aaeea7fa1e847e72bac8bc12c"
+    }
+  ],
+  "receipts": [
+    {
+      "name": "permitted with flow",
+      "canonical": "d7008e7b-480e-48b8-9666-b86ca1944651|req-0001|billing-agent|PERMIT|1758888888.123|066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42|CONFIDENTIAL|TRUSTED",
+      "receipt": {
+        "request_id": "req-0001",
+        "agent_id": "billing-agent",
+        "decision": "PERMIT",
+        "timestamp": 1758888888.1234,
+        "action_ref": "066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42",
+        "flow": {
+          "confidentiality": "CONFIDENTIAL",
+          "integrity": "TRUSTED"
+        },
+        "response_nonce": "d7008e7b-480e-48b8-9666-b86ca1944651",
+        "response_sig": "a37829be6ce4144a305ca619ba4ebdb68891c6aa14102d0a14651ac466f7ca27",
+        "receipt_sig": "k0UPNMmyaHWY1/DoFlyXuepQIqS6/VBzlL9/mlW2qyeWI7rCG0zSeJVajdlqVVHjaQRy+apGrPCjFc+jHNLfBA==",
+        "key_id": "06dad3ac6fde154c"
+      }
+    },
+    {
+      "name": "whole-second timestamp",
+      "canonical": "f24313e3-a5b0-4f28-a2b7-6a49ce162db6|req-0002|billing-agent|PERMIT|1758888888.0|066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42|INTERNAL|UNTRUSTED",
+      "receipt": {
+        "request_id": "req-0002",
+        "agent_id": "billing-agent",
+        "decision": "PERMIT",
+        "timestamp": 1758888888.0,
+        "action_ref": "066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42",
+        "flow": {
+          "confidentiality": "INTERNAL",
+          "integrity": "UNTRUSTED"
+        },
+        "response_nonce": "f24313e3-a5b0-4f28-a2b7-6a49ce162db6",
+        "response_sig": "2c9786e5fb8689010a4c97c9ce7586640d7ee7e2c81a66594373e1b3ca5f1d39",
+        "receipt_sig": "LO40gxV3bbN7A3shr+MtGgMUquitP1mxx+TVf8eFAwP+oTt0E+hx46DjPRwpu3K0BK/D3BhkloicYrgtZTchCA==",
+        "key_id": "06dad3ac6fde154c"
+      }
+    },
+    {
+      "name": "denied, no flow recorded",
+      "canonical": "a8ce2b04-5e14-454a-9857-94a9ab7da1a9|req-0003|reader|DENY|1758888900.5|066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42|",
+      "receipt": {
+        "request_id": "req-0003",
+        "agent_id": "reader",
+        "decision": "DENY",
+        "timestamp": 1758888900.5,
+        "action_ref": "066ca4619b42efff0d0935e01baf9b14e29560b974104963f0190ea4f57c3f42",
+        "flow": null,
+        "response_nonce": "a8ce2b04-5e14-454a-9857-94a9ab7da1a9",
+        "response_sig": "cf9725bb14b945437bdb4545b02bf54d10d182eaf1f90da47a500ebb91157e7a",
+        "receipt_sig": "jviHWfOEIGb3aeXoN8oBlQExUD4dzuDHc2XcDKNcDyn5zIjIZ5nDRT+CoWPgUNSFcIyr3p1Jc7P5WM2wrJL4DA==",
+        "key_id": "06dad3ac6fde154c"
+      }
+    }
+  ],
+  "reference_operation": {
+    "agent_id": "billing-agent",
+    "action": "transfer",
+    "resource": "/payments/outbound",
+    "arguments": {
+      "amount_cents": 25000,
+      "currency": "EUR",
+      "to": "acct_9931"
+    },
+    "policy_version": ""
+  }
+}

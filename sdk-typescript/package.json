@@ -1,7 +1,7 @@
 {
   "name": "agentgate-pdp",
-  "version": "0.1.0",
-  "description": "TypeScript/Node.js SDK for AgentGate — trust authorization for autonomous AI agents",
+  "version": "0.3.0",
+  "description": "Runtime authorization for autonomous AI agents, with receipts an auditor can verify offline",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -15,17 +15,33 @@
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.mjs\"",
+    "vectors": "python test/generate_vectors.py",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
-    "ai", "agents", "security", "authorization", "langchain",
-    "openai", "anthropic", "policy", "pdp", "agentgate"
+    "ai",
+    "agents",
+    "security",
+    "authorization",
+    "langchain",
+    "openai",
+    "anthropic",
+    "policy",
+    "pdp",
+    "agentgate",
+    "audit",
+    "receipts",
+    "provenance",
+    "agentic"
   ],
-  "author": "SynAI Solutions",
+  "author": "Elam Olame Mugabo <eomugabo@synai.solutions>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ElamOlame31/agentgate-public"
+    "url": "git+https://github.com/ElamOlame31/agentgate-public.git",
+    "directory": "sdk-typescript"
   },
   "dependencies": {},
   "devDependencies": {
@@ -35,5 +51,17 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "homepage": "https://www.tryagentgate.com",
+  "bugs": {
+    "url": "https://github.com/ElamOlame31/agentgate-public/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
